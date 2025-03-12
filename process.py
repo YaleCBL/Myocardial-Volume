@@ -10,6 +10,8 @@ import json
 from scipy.interpolate import interp1d
 from scipy.optimize import minimize, least_squares, Bounds
 from scipy.signal import savgol_filter
+from scipy.fftpack import fft, ifft, fftfreq
+from scipy.signal import savgol_filter
 
 
 def read_data(csv_file):
@@ -135,18 +137,33 @@ def estimate_rc(t, p, v):
     # plt.show()
     return [c1, r1, c2, r2]
 
+def smooth_inflow(t, q, cutoff=10):
+    N = len(q)
+    freqs = fftfreq(N, d=t[1] - t[0])
+    q_fft = fft(q)
+    q_fft[np.abs(freqs) > cutoff] = 0
+    q_smooth = np.real(ifft(q_fft))
+    q_zero_mean = q_smooth - np.trapz(q_smooth, t) / (t[-1] - t[0])
+    return q_zero_mean
+
 def estimate(fname):
+    # read measurements
     t, pa, pv, v, flow = read_data(fname)
+
     # unit conversion
     mmHg_to_CGS = 1.33322e3
     pv *= mmHg_to_CGS
     pa *= mmHg_to_CGS
 
+    # calculate and smooth flow rate
+    q = np.gradient(v, t)
+    q_smooth = smooth_inflow(t, q)
+
     # create 0D model
-    forward = create_forward_config(t, pv, "p")
-    nt = forward["simulation_parameters"]["number_of_time_pts_per_cardiac_cycle"]
+    forward = create_forward_config(t, q_smooth, "q")
 
     # interoplate to the same time points
+    nt = forward["simulation_parameters"]["number_of_time_pts_per_cardiac_cycle"]
     t_sim = np.linspace(t[0], t[-1], nt)
     p_sim = np.interp(t_sim, t, pv)
     v_sim = np.interp(t_sim, t, v)
@@ -155,11 +172,10 @@ def estimate(fname):
     param_keys = [(0, "C"), (0, "R_poiseuille"), (1, "C"), (1, "R_poiseuille")]
     set_params(forward, param_keys, np.log(p_estim))
     v_sim = get_vol(forward)
-    plt.plot(v - v[0], pv, "k-")
-    plt.plot(v_sim, p_sim, "ro")
+    plt.plot(v, pv, "k-")
+    plt.plot(v_sim + v[0], p_sim, "r:")
     plt.show()
     pdb.set_trace()
-
 
     optimized_config = optimize_zero_d(forward, v_sim)
     print(optimized_config["vessels"][0]["zero_d_element_values"])
