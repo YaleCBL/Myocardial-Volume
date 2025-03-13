@@ -9,10 +9,10 @@
       "bc_name": "BC",
       "bc_type": "RCR",
       "bc_values": {
-        "C": 1.0e-3,
+        "C": 0.0,
         "Pd": 10.0,
-        "Rd": 1.0e-2,
-        "Rp": 1.0e-2
+        "Rd": 0.0,
+        "Rp": 0.0
       }
     }
   ],
@@ -28,7 +28,8 @@
   "vessels": [
     {
       "boundary_conditions": {
-        "inlet": "pa"
+        "inlet": "pa",
+        "outlet": "BC"
       },
       "vessel_id": 0,
       "vessel_length": 1.0,
@@ -39,19 +40,6 @@
         "L": 0.0,
         "R_poiseuille": 0.0,
         "stenosis_coefficient": 0.0
-      }
-    }
-  ],
-  "valves": [
-    {
-      "type": "ValveTanh",
-      "name": "valve",
-      "params": {
-        "Rmax": 1.0e6,
-        "Rmin": 1.0e-6,
-        "Steepness": 10.0,
-        "upstream_block": "RC1",
-        "downstream_block": "BC"
       }
     }
   ]

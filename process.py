@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import pdb
+import sys
 import pandas as pd
 import matplotlib.pyplot as plt
 import pysvzerod
@@ -79,10 +80,9 @@ def get_v_sim(config):
     return np.cumsum(y) * tmax / nt
 
 
-def get_p_sim(config, loc):
+def get_sim(config, loc):
     sim = pysvzerod.simulate(config)
-    name = "pressure:" + loc
-    return sim[sim["name"] == name]["y"].to_numpy()
+    return sim[sim["name"] == loc]["y"].to_numpy()
 
 def get_valve_open(config):
     sim = pysvzerod.simulate(config)
@@ -93,19 +93,34 @@ def get_valve_open(config):
 
 
 
-def set_params(config, p, fun=lambda x: x):
+def set_params(config, p, x=None):
     out = []
-    for id, k in p.keys():
-        val = fun(p[(id, k)])
-        out += [val]
+    for i, (id, k) in enumerate(p.keys()):
+        xval, pmin, pmax = p[(id, k)]
+        if x is not None:
+            xval = x[i]
+        if xval > 100:
+            pval = pmax
+        elif xval < -100:
+            pval = pmin
+        else:
+            pval = pmin + (pmax - pmin) * 1 / (1/np.exp(xval) + 1)
+        out += [pval]
         if "BC" in id:
             for bc in config[str_bc]:
                 if bc["bc_name"] == id:
-                    bc["bc_values"][k] = val
+                    bc["bc_values"][k] = pval
         else:
             for vs in config["vessels"]:
                 if vs["vessel_name"] == id:
-                    vs[str_val][k] = val
+                    vs[str_val][k] = pval
+    return out
+
+def get_params(p):
+    out = []
+    for k in p.keys():
+        pval, pmin, pmax = p[k]
+        out += [np.log((pval - pmin) / (pmax - pmin))]
     return out
 
 
@@ -166,22 +181,19 @@ def plot_data(study, t_interp, p_smooth, v_smooth, q_smooth):
 
 def optimize_zero_d(config, p0, t_interp, q_smooth, p_smooth, v_smooth):
     def cost_function(p):
-        p = {k: p[i] for i, k in enumerate(p0.keys())}
-        p_set = set_params(config, p, np.exp)
-        # print(np.exp(p))
-        # print(p_set)
-        p_sim = get_p_sim(config, "pa:RC1")
-        # t_fit = np.array(config[str_bc][0]["bc_values"]["t"]) < 0.3
-        cost = p_smooth - p_sim
-        # plt.plot(p_ref, "k-", label="measured")
-        # plt.plot(p_sim, "r:", label="simulated")
-        # plt.show()
-        # print(np.linalg.norm(cost))
-        return cost
+        p_set = set_params(config, p0, p)
+        for val in p_set:
+            print(f"{val:.1e}", end="\t")
+        print()
+        p_sim = get_sim(config, "pressure:pa:RC1")
+        return p_smooth - p_sim
 
-    initial = set_params(config, p0, np.log)
+    initial = get_params(p0)
+    for k in p0.keys():
+        print(k[0] + " " + k[1], end="\t")
+    print()
     res = least_squares(cost_function, initial, jac="2-point", method="lm")
-    set_params(config, {k: res.x[i] for i, k in enumerate(p0.keys())}, np.exp)
+    set_params(config, p0, res.x)
     return config
 
 
@@ -237,43 +249,35 @@ def estimate(fname):
 
     # initial guess
     p0 = OrderedDict()
-    p0[("BC", "Pd")] = p_smooth[0]
-    # p0[("RC1", "C")] = 1.0e-6
-    p0[("RC1", "R_poiseuille")] = 1.0e1
-
-    # p0[("BC_right", "Pd")] = 1.0e1
-    # p0[("BC_left", "Pd")] = 1.0e1
-    # p0[("BC_right", "Pd")] = 1.0e1
-    # p0[("RCLS_left", "C")] = 2.0e-4
-    # p0[("RCLS_right", "C")] = 2.0e-4
-    # p0[("RCLS_left", "R_poiseuille")] = 1.0e0
-    # p0[("RCLS_right", "R_poiseuille")] = 1.0e0
+    p0[("BC", "Pd")] = (7.5e0, 1e-2, 1e2)
+    p0[("BC", "C")] = (1.0e-3, 1e-6, 1e0)
+    p0[("BC", "Rp")] = (1.0e-1, 1e-6, 1e4)
+    p0[("BC", "Rd")] = (1.0e-1, 1e-6, 1e4)
+    p0[("RC1", "C")] = (1.0e-3, 1e-6, 1e0)
+    # p0[("RC1", "L")] = (1.0e-4, 1e-6, 1e0)
+    p0[("RC1", "R_poiseuille")] = (1.1e2, 1e-2, 1e3)
     for name, fun in zip(["estimated", "optimized"], [estimate_rc, optimize_zero_d]):
         config = fun(config, p0, t_interp, q_smooth, p_smooth, v_smooth)
-        print_params(config, p0)
-        p_estim = get_p_sim(config, "pa:RC1")
-        p_out = get_p_sim(config, "RC1:valve")
-        valve = get_valve_open(config)
+        # print_params(config, p0)
+        p_estim = get_sim(config, "pressure:pa:RC1")
+        q_out = get_sim(config, "flow:RC1:BC")
 
-        fig, axs = plt.subplots(4, 1, figsize=(12, 8))
+        _, axs = plt.subplots(3, 1, figsize=(12, 8))
         axs[0].plot(p_smooth, v_smooth, "k-", label="smooth")
-        axs[0].plot(p_estim, v_smooth, "r:", label="simulated")
+        axs[0].plot(p_estim, v_smooth, "r--", label="simulated")
         axs[0].legend()
-        axs[0].set_xlabel("Pressure")
-        axs[0].set_ylabel("Volume")
+        axs[0].set_xlabel("Pressure [mmHg]")
+        axs[0].set_ylabel("Volume [ml]")
         axs[1].plot(t_interp, p_smooth, "k-", label="smooth")
-        axs[1].plot(t_interp, p_estim, "r:", label="simulated")
+        axs[1].plot(t_interp, p_estim, "r--", label="simulated")
         axs[1].legend()
-        axs[1].set_xlabel("Time")
-        axs[1].set_ylabel("Pressure")
-        axs[2].plot(t_interp, p_out, "r:", label="outlet")
+        axs[1].set_xlabel("Time [s]")
+        axs[1].set_ylabel("Pressure [mmHg]")
+        axs[2].plot(t_interp, q_smooth, "k", label="smooth")
+        axs[2].plot(t_interp, q_out, "r--", label="simulated")
         axs[2].legend()
         axs[2].set_xlabel("Time")
-        axs[2].set_ylabel("Pressure")
-        axs[3].plot(t_interp, valve, "k-")
-        axs[3].set_yticks([0, 1])
-        axs[3].set_yticklabels(['closed', 'open'])
-        axs[3].set_xlabel("Time")
+        axs[2].set_ylabel("Flow [ml/s]")
         plt.tight_layout()
         plt.show()
         # pdb.set_trace()
