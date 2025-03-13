@@ -7,6 +7,7 @@ import pysvzerod
 import copy
 import numpy as np
 import json
+from collections import OrderedDict
 from scipy.interpolate import interp1d
 from scipy.optimize import minimize, least_squares, Bounds
 from scipy.signal import savgol_filter
@@ -16,6 +17,8 @@ from scipy.integrate import cumulative_trapezoid
 
 str_val = "zero_d_element_values"
 str_bc = "boundary_conditions"
+str_param = "simulation_parameters"
+
 
 def read_data(csv_file):
     df = pd.read_csv(csv_file)
@@ -72,50 +75,113 @@ def get_v_sim(config):
     name = "flow:pa:RC1"
     y = sim[sim["name"] == name]["y"].to_numpy()
     tmax = config[str_bc][0]["bc_values"]["t"][-1]
-    nt = config["simulation_parameters"]["number_of_time_pts_per_cardiac_cycle"]
+    nt = config[str_param]["number_of_time_pts_per_cardiac_cycle"]
     return np.cumsum(y) * tmax / nt
 
 
-def get_p_sim(config):
+def get_p_sim(config, loc):
     sim = pysvzerod.simulate(config)
-    name = "pressure:pa:RC1"
+    name = "pressure:" + loc
     return sim[sim["name"] == name]["y"].to_numpy()
 
+def get_valve_open(config):
+    sim = pysvzerod.simulate(config)
+    q = []
+    for name in ["pressure:RC1:valve", "pressure:valve:BC"]:
+        q += [sim[sim["name"] == name]["y"].to_numpy()]
+    return q[1] - q[0] < 0
 
-def set_params(config, param_keys, p):
-    for i, (id, k) in enumerate(param_keys):
-        if id == -1:
-            config[str_bc][1]["bc_values"][k] = np.exp(p[i])
+
+
+def set_params(config, p, fun=lambda x: x):
+    out = []
+    for id, k in p.keys():
+        val = fun(p[(id, k)])
+        out += [val]
+        if "BC" in id:
+            for bc in config[str_bc]:
+                if bc["bc_name"] == id:
+                    bc["bc_values"][k] = val
         else:
-            config["vessels"][id][str_val][k] = np.exp(p[i])
-    return config
+            for vs in config["vessels"]:
+                if vs["vessel_name"] == id:
+                    vs[str_val][k] = val
+    return out
 
 
-def print_params(config, param_keys):
+def print_params(config, param):
     str = ""
-    for id, k in param_keys:
-        if id == -1:
-            str += k + f" {config[str_bc][1]['bc_values'][k]:.1e} "
+    for id, k in param.keys():
+        if "BC" in id:
+            for bc in config[str_bc]:
+                if bc["bc_name"] == id:
+                    val = bc["bc_values"][k]
         else:
-            str += k + repr(id) + f" {config['vessels'][id][str_val][k]:.1e} "
+            for vs in config["vessels"]:
+                if vs["vessel_name"] == id:
+                    val = vs[str_val][k]
+        str += id + " " + k + f" {val:.1e} "
     print(str)
 
 
-def optimize_zero_d(config, param_keys, p_ref, p0):
+def smooth(t, q, mode, cutoff=10):
+    N = len(q)
+    freqs = fftfreq(N, d=t[1] - t[0])
+    q_fft = fft(q)
+    q_fft[np.abs(freqs) > cutoff] = 0
+    q_smooth = np.real(ifft(q_fft))
+    if mode == "q":
+        return q_smooth - np.trapz(q_smooth, t) / (t[-1] - t[0])
+    elif mode == "p":
+        return q_smooth
+
+
+def plot_data(study, t_interp, p_smooth, v_smooth, q_smooth):
+    plt.plot(p_smooth, v_smooth, "ko")
+    plt.xlabel("Pressure [mmHg]")
+    plt.ylabel("Volume [mL]")
+    plt.savefig(study + "_pv.pdf")
+    plt.close()
+
+    fig, ax1 = plt.subplots()
+    ax2 = ax1.twinx()
+    ax1.set_xlabel("Time [s]")
+    ax1.plot(t_interp, p_smooth, "r")
+    ax1.set_ylabel("Pressure [mmHg]")
+    ax2.plot(t_interp, v_smooth, "k")
+    ax2.set_ylabel("Volume [mL]")
+    plt.savefig(study + "_p_and_v.pdf")
+    plt.close()
+
+    fig, ax1 = plt.subplots()
+    ax2 = ax1.twinx()
+    ax1.set_xlabel("Time [s]")
+    ax1.plot(t_interp, p_smooth, "r")
+    ax1.set_ylabel("Pressure [mmHg]")
+    ax2.plot(t_interp, q_smooth, "k")
+    ax2.set_ylabel("Flow [mL/s]")
+    plt.savefig(study + "_p_and_q.pdf")
+    plt.close()
+
+
+def optimize_zero_d(config, p0, t_interp, q_smooth, p_smooth, v_smooth):
     def cost_function(p):
-        set_params(config, param_keys, p)
-        print(np.exp(p))
-        p_sim = get_p_sim(config)
-        cost = p_ref - p_sim
-        # print(p)
+        p = {k: p[i] for i, k in enumerate(p0.keys())}
+        p_set = set_params(config, p, np.exp)
+        # print(np.exp(p))
+        # print(p_set)
+        p_sim = get_p_sim(config, "pa:RC1")
+        # t_fit = np.array(config[str_bc][0]["bc_values"]["t"]) < 0.3
+        cost = p_smooth - p_sim
         # plt.plot(p_ref, "k-", label="measured")
         # plt.plot(p_sim, "r:", label="simulated")
         # plt.show()
         # print(np.linalg.norm(cost))
         return cost
 
-    res = least_squares(cost_function, np.log(p0), jac="2-point", method="lm")
-    set_params(config, param_keys, res.x)
+    initial = set_params(config, p0, np.log)
+    res = least_squares(cost_function, initial, jac="2-point", method="lm")
+    set_params(config, {k: res.x[i] for i, k in enumerate(p0.keys())}, np.exp)
     return config
 
 
@@ -139,126 +205,81 @@ def main_ideal():
     print(config_opti["vessels"][0][str_val])
 
 
-def estimate_rc(config, param_keys, p):
-    t = config[str_bc][0]["bc_values"]["t"]
-    q = config[str_bc][0]["bc_values"]["Q"]
-    v = cumulative_trapezoid(q, t, initial=0.0)
-    dp = np.gradient(p, t)
-    # dv = q_smooth
-
-    # pmax = p_smooth.max()
-    # pmin = p_smooth.min()
-    # dpmax = dp.max()
-    # dpmin = dp.min()
-    # dvmax = dv.max()
-    # dvmin = dv.min()
-
-    # c1 = -dvmax / dpmin
-    # c2 = -dvmin / dpmax
-    # r1 = (pmax - pmin) / dvmax
-    # r2 = (pmin - pmax) / dvmin
-
-    dp_dv = dp / q
-    systole_idx = np.argmax(dp_dv)
-    late_systole_idx = np.argmin(np.abs(dp_dv))
-    early_diastole_idx = np.argmin(dp_dv)
-
-    pmin = p.min()
-    pmax = p.max()
-
-    max_idx = np.argmax(dp)
-    r1 = - dp.max() / q[max_idx]
-
-    steady_idx = np.argmin(np.abs(p - pmin))
-    r2 = (p[steady_idx] - pmin) / q[steady_idx]
-    pdb.set_trace()
-    # plt.plot(v, p, "k-")
-
-    param = [pmin, c1, r1, c2, r2]
-    plt.plot(v_smooth, p_smooth, "ro")
-    plt.show()
-    pdb.set_trace()
-    set_params(config, param_keys, param)
-
-
-def smooth(t, q, mode, cutoff=10):
-    N = len(q)
-    freqs = fftfreq(N, d=t[1] - t[0])
-    q_fft = fft(q)
-    q_fft[np.abs(freqs) > cutoff] = 0
-    q_smooth = np.real(ifft(q_fft))
-    if mode == "q":
-        return q_smooth - np.trapz(q_smooth, t) / (t[-1] - t[0])
-    elif mode == "p":
-        return q_smooth
+def estimate_rc(config, p0, ts, qs, ps, vs):
+    set_params(config, p0)
+    with open("forward.json", "w") as f:
+        json.dump(config, f, indent=2)
+    return config
 
 
 def estimate(fname):
     # read measurements
     t, pa, pv, v, flow = read_data(fname)
 
-    # calculate and smooth flow rate
-    q = np.gradient(v, t)
-    q_smooth = - smooth(t, q, "q")
-    p_smooth = smooth(t, pv, "p")
-    v_smooth = cumulative_trapezoid(q_smooth, t, initial=0.0)
-
-    # create 0D model
-    config_estim = create_forward_config(t, q_smooth, "q")
+    # simulation parameters
+    nt = 201
 
     # interoplate to the same time points
-    nt = config_estim["simulation_parameters"]["number_of_time_pts_per_cardiac_cycle"]
     t_interp = np.linspace(t[0], t[-1], nt)
     v_interp = np.interp(t_interp, t, v)
     p_interp = np.interp(t_interp, t, pv)
+    q_interp = np.gradient(v_interp, t_interp)
 
-    # plt.plot(p_smooth, v_smooth, "k-")
-    # plt.xlabel("Pressure [mmHg]")
-    # plt.ylabel("Volume [mL]")
-    # plt.show()
+    # calculate and smooth flow rate
+    q_smooth = -smooth(t_interp, q_interp, "q")
+    p_smooth = smooth(t_interp, p_interp, "p")
+    v_smooth = cumulative_trapezoid(q_smooth, t_interp, initial=0.0)
+    plot_data(fname, t_interp, p_smooth, v_smooth, q_smooth)
 
-    # fig, ax1 = plt.subplots()
-    # ax2 = ax1.twinx()
-    # ax1.set_xlabel("Time [s]")
-    # ax1.set_ylabel("Pressure [mmHg]")
-    # ax1.plot(t, p_smooth, "r")
-    # ax2.set_ylabel("Flow [mL/s]")
-    # ax2.plot(t, q_smooth, "k")
-    # plt.show()
-    # pdb.set_trace()
-
-    # parameters to be calibrated
-    param_keys = [(-1, "Pd"), (0, "C"), (0, "R_poiseuille")]
+    # create 0D model
+    config = create_forward_config(t_interp, q_smooth, "q")
+    config[str_param]["number_of_time_pts_per_cardiac_cycle"] = nt
 
     # initial guess
-    p0 = [1.0e1, 1.0e-4, 1.0e3]
-    # estimate parameters
-    # p_estim = estimate_rc(config_estim, param_keys, p_smooth)
-    # set_params(config_estim, param_keys, np.log(p_estim))
-    # print_params(config_estim, param_keys)
-    # p_estim = get_p_sim(config_estim)
+    p0 = OrderedDict()
+    p0[("BC", "Pd")] = p_smooth[0]
+    # p0[("RC1", "C")] = 1.0e-6
+    p0[("RC1", "R_poiseuille")] = 1.0e1
 
-    # plt.plot(p_interp, v_interp, "k-", label="measured")
-    # plt.plot(p_estim, v_interp, "r:", label="estimated")
-    # plt.xlabel("Pressure [mmHg]")
-    # plt.ylabel("Volume [mL]")
-    # plt.legend()
-    # plt.show()
+    # p0[("BC_right", "Pd")] = 1.0e1
+    # p0[("BC_left", "Pd")] = 1.0e1
+    # p0[("BC_right", "Pd")] = 1.0e1
+    # p0[("RCLS_left", "C")] = 2.0e-4
+    # p0[("RCLS_right", "C")] = 2.0e-4
+    # p0[("RCLS_left", "R_poiseuille")] = 1.0e0
+    # p0[("RCLS_right", "R_poiseuille")] = 1.0e0
+    for name, fun in zip(["estimated", "optimized"], [estimate_rc, optimize_zero_d]):
+        config = fun(config, p0, t_interp, q_smooth, p_smooth, v_smooth)
+        print_params(config, p0)
+        p_estim = get_p_sim(config, "pa:RC1")
+        p_out = get_p_sim(config, "RC1:valve")
+        valve = get_valve_open(config)
 
-    # optimize parameters
-    config_opti = optimize_zero_d(config_estim, param_keys, p_interp, p0)
-    print_params(config_opti, param_keys)
-    p_opti = get_p_sim(config_estim)
+        fig, axs = plt.subplots(4, 1, figsize=(12, 8))
+        axs[0].plot(p_smooth, v_smooth, "k-", label="smooth")
+        axs[0].plot(p_estim, v_smooth, "r:", label="simulated")
+        axs[0].legend()
+        axs[0].set_xlabel("Pressure")
+        axs[0].set_ylabel("Volume")
+        axs[1].plot(t_interp, p_smooth, "k-", label="smooth")
+        axs[1].plot(t_interp, p_estim, "r:", label="simulated")
+        axs[1].legend()
+        axs[1].set_xlabel("Time")
+        axs[1].set_ylabel("Pressure")
+        axs[2].plot(t_interp, p_out, "r:", label="outlet")
+        axs[2].legend()
+        axs[2].set_xlabel("Time")
+        axs[2].set_ylabel("Pressure")
+        axs[3].plot(t_interp, valve, "k-")
+        axs[3].set_yticks([0, 1])
+        axs[3].set_yticklabels(['closed', 'open'])
+        axs[3].set_xlabel("Time")
+        plt.tight_layout()
+        plt.show()
+        # pdb.set_trace()
 
-    plt.plot(p_interp, v_interp, "k-", label="measured")
-    plt.plot(p_opti, v_interp, "y:", label="simulated")
-    plt.legend()
-    plt.show()
-    plt.plot(t_interp, p_interp, "k-", label="measured")
-    plt.plot(t_interp, p_opti, "r:", label="simulated")
-    plt.legend()
-    plt.show()
-    # pdb.set_trace()
+        with open("config_" + name + ".json", "w") as f:
+            json.dump(config, f, indent=2)
 
 
 def main():

@@ -1,56 +1,58 @@
 {
-    "boundary_conditions": [
-        {
-            "bc_name": "pa",
-            "bc_type": "none",
-            "bc_values": {}
-        },
-        {
-            "bc_name": "gnd",
-            "bc_type": "RCR",
-            "bc_values": {
-                "C": 0.0,
-                "Pd": 0.0,
-                "Rd": 0.0,
-                "Rp": 0.0
-            }
-        }
-    ],
-    "simulation_parameters": {
-        "number_of_cardiac_cycles": 200,
-        "number_of_time_pts_per_cardiac_cycle": 201,
-        "output_all_cycles": false,
-        "output_derivative": true,
-        "output_variable_based": true
+  "boundary_conditions": [
+    {
+      "bc_name": "pa",
+      "bc_type": "none",
+      "bc_values": {}
     },
-    "vessels": [
-        {
-            "boundary_conditions": {
-                "inlet": "pa"
-            },
-            "vessel_id": 0,
-            "vessel_length": 1.0,
-            "vessel_name": "RC1",
-            "zero_d_element_type": "BloodVessel",
-            "zero_d_element_values": {
-                "C": 0.0,
-                "L": 0.0,
-                "R_poiseuille": 0.0,
-                "stenosis_coefficient": 0.0
-            }
-        }
-    ],
-    "valves": [
-        {
-            "type": "ValveTanh",
-            "name": "valve",
-            "params": {
-                "Rmax": 10000.0,
-                "Rmin": 10.0,
-                "Steepness": 100.0,
-                "upstream_block": "RC1",
-                "downstream_block": "gnd"
-            }
-        }
-    ]
+    {
+      "bc_name": "BC",
+      "bc_type": "RCR",
+      "bc_values": {
+        "C": 1.0e-3,
+        "Pd": 10.0,
+        "Rd": 1.0e-2,
+        "Rp": 1.0e-2
+      }
+    }
+  ],
+  "simulation_parameters": {
+    "number_of_cardiac_cycles": 200,
+    "number_of_time_pts_per_cardiac_cycle": 201,
+    "output_all_cycles": false,
+    "output_derivative": true,
+    "output_variable_based": true,
+    "sim_cycle_to_cycle_percent_error" : 1.0,
+    "steady_initial" : true
+  },
+  "vessels": [
+    {
+      "boundary_conditions": {
+        "inlet": "pa"
+      },
+      "vessel_id": 0,
+      "vessel_length": 1.0,
+      "vessel_name": "RC1",
+      "zero_d_element_type": "BloodVessel",
+      "zero_d_element_values": {
+        "C": 1.0e-3,
+        "L": 0.0,
+        "R_poiseuille": 0.0,
+        "stenosis_coefficient": 0.0
+      }
+    }
+  ],
+  "valves": [
+    {
+      "type": "ValveTanh",
+      "name": "valve",
+      "params": {
+        "Rmax": 1.0e6,
+        "Rmin": 1.0e-6,
+        "Steepness": 10.0,
+        "upstream_block": "RC1",
+        "downstream_block": "BC"
+      }
+    }
+  ]
 }
