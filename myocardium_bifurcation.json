@@ -1,0 +1,84 @@
+{
+  "simulation_parameters": {
+    "number_of_cardiac_cycles": 20,
+    "number_of_time_pts_per_cardiac_cycle": 201,
+    "output_all_cycles": false,
+    "output_variable_based": true,
+    "sim_cycle_to_cycle_percent_error": 1.0,
+    "steady_initial": true
+  },
+  "boundary_conditions": [
+    {
+      "bc_name": "BC_myo",
+      "bc_type": "FLOW",
+      "bc_values": {
+      }
+    },
+    {
+      "bc_name": "BC_LAD",
+      "bc_type": "PRESSURE",
+      "bc_values": {
+      }
+    },
+    {
+      "bc_name": "BC_distal",
+      "bc_type": "PRESSURE",
+      "bc_values": {
+      }
+    }
+  ],
+  "junctions": [
+    {
+      "inlet_vessels": [0],
+      "junction_name": "J1",
+      "junction_type": "NORMAL_JUNCTION",
+      "outlet_vessels": [1, 2]
+    }],
+  "vessels": [
+    {
+      "vessel_id": 0,
+      "vessel_length": "",
+      "vessel_name": "v_myo",
+      "zero_d_element_type": "BloodVessel",
+      "zero_d_element_values": {
+        "C": 0,
+        "L": 0,
+        "R_poiseuille": 0,
+        "stenosis_coefficient": 0
+      },
+      "boundary_conditions": {
+        "outlet": "BC_myo"
+      }
+    },
+    {
+      "vessel_id": 1,
+      "vessel_length": "",
+      "vessel_name": "v_i_p",
+      "zero_d_element_type": "BloodVessel",
+      "zero_d_element_values": {
+        "C": 0,
+        "L": 0,
+        "R_poiseuille": 0,
+        "stenosis_coefficient": 0
+      },
+      "boundary_conditions": {
+        "outlet": "BC_LAD"
+      }
+    },
+    {
+      "vessel_id": 2,
+      "vessel_length": "",
+      "vessel_name": "v_i_d",
+      "zero_d_element_type": "BloodVessel",
+      "zero_d_element_values": {
+        "C": 0,
+        "L": 0,
+        "R_poiseuille": 0,
+        "stenosis_coefficient": 0
+      },
+      "boundary_conditions": {
+        "outlet": "BC_distal"
+      }
+    }
+  ]
+}

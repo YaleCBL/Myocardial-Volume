@@ -57,7 +57,7 @@ def get_sim(config, loc):
     sim = pysvzerod.simulate(config)
     res = sim[sim["name"] == loc]["y"].to_numpy()
     if not res.size:
-        raise ValueError(f"Location {loc} not found in simulation results.")
+        raise ValueError(f"Result {loc} not found. Options are:\n" + ", ".join(np.unique(sim["name"]).tolist()))
     return res
 
 
@@ -85,7 +85,11 @@ def set_params(config, p, x=None):
         if "BC" in id:
             for bc in config[str_bc]:
                 if bc["bc_name"] == id:
-                    bc["bc_values"][k] = pval
+                    if k == "P" and isinstance(pval, float):
+                        bc["bc_values"][k] = [pval, pval]
+                        bc["bc_values"]["t"] = [0, 0.737]
+                    else:
+                        bc["bc_values"][k] = pval
         else:
             for vs in config["vessels"]:
                 if vs["vessel_name"] == id:
@@ -168,39 +172,47 @@ def plot_data(study, data):
     plt.close()
 
 
-def plot_results(study, config, ti, ps, vs):
-    with open(study + ".json", "w") as f:
+def plot_results(name, config, ti, plads, qlads, save=True):
+    with open(name + ".json", "w") as f:
         json.dump(config, f, indent=2)
 
-    p_estim = get_sim(config, "pressure:BC_LAD:v_p")
-    # p_out = get_sim(config, "pressure:RC1:BC")
+    p_estim = get_sim(config, "pressure:v_i_p:BC_LAD")
+    q_estim = get_sim(config, "flow:v_i_p:BC_LAD")
 
-    _, axs = plt.subplots(2, 1, figsize=(9, 12))
-    axs[0].plot(ps, vs, "k", label="measured (smoothed)")
-    axs[0].plot(p_estim, vs, "r--", label="simulated")
-    axs[0].legend()
-    axs[0].set_xlabel("Pressure [mmHg]")
-    axs[0].set_ylabel("Volume [ml]")
+    _, axs = plt.subplots(2, 1, figsize=(12, 9))
 
-    axs[1].plot(ti, ps, "k", label="measured (smoothed)")
-    axs[1].plot(ti, p_estim, "r--", label="simulated")
-    axs[1].legend()
-    axs[1].set_xlabel("Time [s]")
-    axs[1].set_ylabel("Pressure [mmHg]")
+    i = 0
+    axs[i].plot(ti, plads, "k", label="measured (smoothed)")
+    axs[i].plot(ti, p_estim, "r--", label="simulated")
+    axs[i].legend()
+    axs[i].set_xlabel("Time [s]")
+    axs[i].set_ylabel("Pressure [mmHg]")
+
+    i = 1
+    axs[i].plot(ti, qlads, "k", label="measured (smoothed)")
+    axs[i].plot(ti, q_estim, "r--", label="simulated")
+    axs[i].legend()
+    axs[i].set_xlabel("Time [s]")
+    axs[i].set_ylabel("Flow [mmHg]")
 
     plt.tight_layout()
-    plt.savefig(study + "_simulated.pdf")
-    plt.close()
+    if save:
+        plt.savefig(name + "_simulated.pdf")
+        plt.close()
+    else:
+        plt.show()
 
 
-def optimize_zero_d(config, p0, ti, qs, ps, vs, verbose=False):
+def optimize_zero_d(config, p0, ti, plads, qlads, verbose=0):
     def cost_function(p):
         pset = set_params(config, p0, p)
         if verbose:
             for val in pset:
                 print(f"{val:.1e}", end="\t")
-        psim = get_sim(config, "pressure:BC_LAD:v_p")
-        obj = ps - psim
+            if verbose > 1:
+                plot_results("iter", config, ti, plads, qlads, save=False)
+        qsim = get_sim(config, "flow:v_i_p:BC_LAD")
+        obj = qlads - qsim
         print(f"{np.linalg.norm(obj):.1e}", end="\n")
         return obj
 
@@ -216,6 +228,7 @@ def optimize_zero_d(config, p0, ti, qs, ps, vs, verbose=False):
 
 def estimate(animal, study):
     # read measurements
+    name = animal + "_" + study
     t, plad, pven, vmyo, qlad, dvcycle = read_data(animal, study)
     qmyo = np.gradient(vmyo, t)
     vlad = cumulative_trapezoid(qlad, t, initial=0)
@@ -260,35 +273,35 @@ def estimate(animal, study):
         "qlad": qlads,
         "vlad": vlads,
     }
-    plot_data(animal + "_" + study, data)
+    plot_data(name, data)
 
     # create 0D model
-    config = read_config("myocardium_two_flows.json")
+    config = read_config("myocardium_bifurcation.json")
     config[str_param]["number_of_time_pts_per_cardiac_cycle"] = nt
 
     # set boundary conditions
     pini = {}
     pini[("BC_myo", "t")] = (ti.tolist(), None, None)
     pini[("BC_myo", "Q")] = (qmyos.tolist(), None, None)
-    pini[("BC_LAD", "t")] = (t.tolist(), None, None)
-    pini[("BC_LAD", "Q")] = (qlad.tolist(), None, None)
+    pini[("BC_LAD", "t")] = (ti.tolist(), None, None)
+    pini[("BC_LAD", "P")] = (plads.tolist(), None, None)
     set_params(config, pini)
 
     # initial guess
     p0 = OrderedDict()
-    # p0[("BC_distal", "C")] = (9.1e-04, 1e-6, 1e0)
-    # p0[("BC_distal", "Rp")] = (6.0e01, 1e-6, 1e6)
-    # p0[("BC_distal", "Rd")] = (2.5e02, 1e-6, 1e6)
-    p0[("BC_distal", "Pd")] = (1.0e-1, 1e-3, 1e2)
-    # ["v_myo", "v_d", "v_p"]
-    for vmyo in ["v_i_p", "v_i_d", "v_r"]:
-        # p0[(v, "C")] = (1.0e-6, 1e-12, 1e0)
-        p0[(vmyo, "R_poiseuille")] = (1.0e1, 1e0, 1e3)
+    p0[("BC_distal", "P")] = (1e1, 1e-2, 1e2)
+    for i in ["v_myo", "v_i_p", "v_i_d"]:
+        p0[(i, "R_poiseuille")] = (1.0e0, 1e-6, 1e4)
+        # p0[(i, "C")] = (1.0e-3, 1e-12, 1e1)
+        # p0[(i, "L")] = (1.0e-9, 1e-12, 1e1)
+    # p0[("BC", "Rp")] = (1.0e1, 1e-6, 1e6)
+    # p0[("BC", "Rd")] = (1.0e1, 1e-6, 1e6)
+    # p0[("BC", "C")] = (1.0e-3, 1e-9, 1e1)
     set_params(config, p0)
 
-    config_opt = optimize_zero_d(config, p0, ti, qmyos, plads, vmyos, verbose=True)
-    plot_results(study, config_opt, ti, plads, vmyos)
-    print(study)
+    config_opt = optimize_zero_d(config, p0, ti, plads, qlads, verbose=1)
+    plot_results(name, config_opt, ti, plads, qlads)
+    print(name)
     print_params(config_opt, p0)
 
 
