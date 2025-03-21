@@ -10,7 +10,7 @@
       "bc_type": "RCR",
       "bc_values": {
         "C": 0.0,
-        "Pd": 10.0,
+        "Pd": 0.0,
         "Rd": 0.0,
         "Rp": 0.0
       }
@@ -22,8 +22,8 @@
     "output_all_cycles": false,
     "output_derivative": true,
     "output_variable_based": true,
-    "sim_cycle_to_cycle_percent_error" : 1.0,
-    "steady_initial" : true
+    "sim_cycle_to_cycle_percent_error": 1.0,
+    "steady_initial": true
   },
   "vessels": [
     {
@@ -36,7 +36,7 @@
       "vessel_name": "RC1",
       "zero_d_element_type": "BloodVessel",
       "zero_d_element_values": {
-        "C": 1.0e-3,
+        "C": 0.0,
         "L": 0.0,
         "R_poiseuille": 0.0,
         "stenosis_coefficient": 0.0
