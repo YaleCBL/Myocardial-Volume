@@ -1,0 +1,78 @@
+{
+    "simulation_parameters": {
+        "number_of_cardiac_cycles": 30,
+        "number_of_time_pts_per_cardiac_cycle": 101
+    },
+    "boundary_conditions": [
+        {
+            "bc_name": "Par",
+            "bc_type": "PRESSURE",
+            "bc_values": {"P": [10000.0, 10000.0], "t": [0.0, 1.0]}
+        },
+        {
+            "bc_name": "PLV",
+            "bc_type": "PRESSURE",
+            "bc_values": {"P": [5000.0, 5000.0], "t": [0.0, 1.0]}
+        },
+        {
+            "bc_name": "Pv0",
+            "bc_type": "PRESSURE",
+            "bc_values": {"P": [0.0, 0.0], "t": [0.0, 1.0]}
+        },
+        {
+            "bc_name": "Pv1",
+            "bc_type": "PRESSURE",
+            "bc_values": {"P": [0.0, 0.0], "t": [0.0, 1.0]}
+        }
+    ],
+    "vessels": [
+        {
+            "vessel_id": 0,
+            "vessel_name": "Ra",
+            "zero_d_element_type": "Resistance",
+            "zero_d_element_values": {"R": 1000.0},
+            "boundary_conditions": {"inlet": "Par"}
+        },
+        {
+            "vessel_id": 1,
+            "vessel_name": "Ca",
+            "zero_d_element_type": "Capacitance",
+            "zero_d_element_values": {"C": 0.0001},
+            "boundary_conditions": {"outlet": "Pv0"}
+        },
+        {
+            "vessel_id": 2,
+            "vessel_name": "Ra-micro",
+            "zero_d_element_type": "Resistance",
+            "zero_d_element_values": {"R": 1000.0}
+        },
+        {
+            "vessel_id": 3,
+            "vessel_name": "Cim",
+            "zero_d_element_type": "Capacitance",
+            "zero_d_element_values": {"C": 0.0001},
+            "boundary_conditions": {"outlet": "PLV"}
+        },
+        {
+            "vessel_id": 4,
+            "vessel_name": "Rv",
+            "zero_d_element_type": "Resistance",
+            "zero_d_element_values": {"R": 1000.0},
+            "boundary_conditions": {"outlet": "Pv1"}
+        }
+    ],
+    "junctions": [
+        {
+            "junction_name": "J0",
+            "junction_type": "NORMAL_JUNCTION",
+            "inlet_vessels": [0],
+            "outlet_vessels": [1, 2]
+        },
+        {
+            "junction_name": "J1",
+            "junction_type": "NORMAL_JUNCTION",
+            "inlet_vessels": [2],
+            "outlet_vessels": [3, 4]
+        }
+    ]
+}
