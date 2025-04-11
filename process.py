@@ -21,6 +21,8 @@ str_val = "zero_d_element_values"
 str_bc = "boundary_conditions"
 str_param = "simulation_parameters"
 
+mmHg_to_Ba = 133.322
+Ba_to_mmHg = 1 / mmHg_to_Ba
 
 def read_data(animal, study):
     csv_file = os.path.join("data", animal + "_" + study + ".csv")
@@ -30,7 +32,7 @@ def read_data(animal, study):
     # convert pressure to cgs units
     for field in df.keys():
         if "mmHg" in field:
-            df[field.replace("mmHg", "Ba")] = df[field] * 133.322
+            df[field.replace("mmHg", "Ba")] = df[field] * mmHg_to_Ba
 
     plad = df["AoP [Ba]"].to_numpy()
     pven = df["LVP [Ba]"].to_numpy()
@@ -44,6 +46,20 @@ def read_data(animal, study):
             dvcycle = df[k][0]
             break
     return t, plad, pven, vmyo, qlad, dvcycle
+
+
+def read_lit_data(fname):
+    lit_path = os.path.join("data", fname)
+    lit_data = read_config(lit_path)
+    for k, v in lit_data.items():
+        for kk, vv in v.items():
+            if kk[0] == "R":
+                for kkk in vv.keys():
+                    lit_data[k][kk][kkk] *= 1e3
+            if kk[0] == "C":
+                for kkk in vv.keys():
+                    lit_data[k][kk][kkk] *= 1e-6
+    return lit_data
 
 
 def read_config(fname):
@@ -143,10 +159,9 @@ def plot_data(study, data):
     axt = [ax[i].twinx() for i in range(len(ax))]
     mk = {"original": ".", "smoothed": "-"}
 
-    ax[0].set_xlabel("Pressure [mmHg]")
+    ax[0].set_xlabel("LAD Pressure [mmHg]")
     ax[0].set_ylabel("Volume [mL]")
-
-    ax[1].set_ylabel("LAD Pressure [mmHg]")
+    ax[1].set_ylabel("Delta pressure [mmHg]")
 
     for j, loc in enumerate(["myo", "lad"]):
         ax[j + 2].set_ylabel(f"{loc} volume [mL]", color="b")
@@ -156,8 +171,8 @@ def plot_data(study, data):
         ax[i].set_xlabel("Time [s]")
 
     for k in ["original", "smoothed"]:
-        ax[0].plot(data[k]["plad"], data[k]["vmyo"], f"k{mk[k]}")
-        ax[1].plot(data[k]["t"], data[k]["plad"] - data[k]["pven"], f"r{mk[k]}")
+        ax[0].plot(data[k]["plad"]*Ba_to_mmHg, data[k]["vmyo"], f"k{mk[k]}")
+        ax[1].plot(data[k]["t"], (data[k]["plad"] - data[k]["pven"])*Ba_to_mmHg, f"r{mk[k]}")
 
         for j, loc in enumerate(["myo", "lad"]):
             ax[j + 2].plot(
@@ -176,27 +191,35 @@ def plot_data(study, data):
     plt.close()
 
 
-def plot_results(name, config, ti, plads, qlads, save=True):
+def plot_results(name, config, ti, plad, plv, qlads, save=True):
     with open(name + ".json", "w") as f:
         json.dump(config, f, indent=2)
 
-    p_estim = get_sim(config, "pressure:BC_Par:Ra")
-    q_estim_in = get_sim(config, "flow:J1:Cim")
-    q_estim_out = get_sim(config, "flow:Cim:BC_PLV")
-    q_estim = q_estim_in - q_estim_out
+    plad_sim = get_sim(config, "pressure:BC_Par:Ra")
+    plv_sim = get_sim(config, "pressure:Cim:BC_PLV")
+    q_sim_in = get_sim(config, "flow:J1:Cim")
+    q_sim_out = get_sim(config, "flow:Cim:BC_PLV")
+    q_sim = q_sim_out - q_sim_in
 
-    _, axs = plt.subplots(2, 1, figsize=(12, 9))
+    _, axs = plt.subplots(3, 1, figsize=(12, 9))
 
     i = 0
-    axs[i].plot(ti, plads, "k", label="measured (smoothed)")
-    axs[i].plot(ti, p_estim, "r--", label="simulated")
+    axs[i].plot(ti, plad_sim*Ba_to_mmHg, "r-", label="simulated")
+    axs[i].plot(ti, plad*Ba_to_mmHg, "k--", label="measured (smoothed)")
     axs[i].legend()
     axs[i].set_xlabel("Time [s]")
     axs[i].set_ylabel("Pressure [mmHg]")
 
     i = 1
-    axs[i].plot(ti, qlads, "k", label="measured (smoothed)")
-    axs[i].plot(ti, q_estim, "r--", label="simulated")
+    axs[i].plot(ti, plv_sim*Ba_to_mmHg, "r-", label="simulated")
+    axs[i].plot(ti, plv*Ba_to_mmHg, "k--", label="measured (smoothed)")
+    axs[i].legend()
+    axs[i].set_xlabel("Time [s]")
+    axs[i].set_ylabel("Pressure [mmHg]")
+
+    i = 2
+    axs[i].plot(ti, q_sim, "r-", label="simulated")
+    axs[i].plot(ti, qlads, "k--", label="measured (smoothed)")
     axs[i].legend()
     axs[i].set_xlabel("Time [s]")
     axs[i].set_ylabel("Flow [ml/s]")
@@ -299,6 +322,7 @@ def estimate(animal, study):
     pini[("BC_Pv1", "P")] = (pv, None, None)
 
     # set parameters from kim10b
+    lit_data = read_lit_data("kim10b_table3.json")
     lit_vessel = lit_data["a"]
     bounds = {"R": (1e-6, 1e6), "C": (1e-12, 1e12), "L": (1e-12, 1e12)}
     param = ["Ra", "Ca", "Ra-micro", "Cim", "Rv"]
@@ -308,7 +332,7 @@ def estimate(animal, study):
                 pini[(p, p[0])] = (lit_vessel[p]["R"], *bounds[p[0]])
     set_params(config, pini)
     # pdb.set_trace()
-    plot_results(name, config, ti, plads, qlads)
+    plot_results(name, config, ti, plads, pvens, qlads)
 
     # # initial guess
     # p0 = OrderedDict()
@@ -328,7 +352,6 @@ def estimate(animal, study):
 
     # config_opt = optimize_zero_d(config, p0, ti, plads, qlads, verbose=1)
     # plot_results(name, config_opt, ti, plads, qlads)
-    # pdb.set_trace()
     print(name)
     # print_params(config_opt, p0)
 
