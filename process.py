@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import pdb
 import sys
 import pandas as pd
@@ -22,15 +23,21 @@ str_param = "simulation_parameters"
 
 
 def read_data(animal, study):
-    csv_file = animal + "_" + study + ".csv"
+    csv_file = os.path.join("data", animal + "_" + study + ".csv")
     df = pd.read_csv(csv_file)
     t = df["t abs [s]"].to_numpy()
-    plad = df["AoP [mmHg]"].to_numpy()
-    pven = df["LVP [mmHg]"].to_numpy()
+
+    # convert pressure to cgs units
+    for field in df.keys():
+        if "mmHg" in field:
+            df[field.replace("mmHg", "Ba")] = df[field] * 133.322
+
+    plad = df["AoP [Ba]"].to_numpy()
+    pven = df["LVP [Ba]"].to_numpy()
     vmyo = df["tissue vol ischemic [ml]"].to_numpy()
     qlad = df["LAD Flow [mL/s]"].to_numpy()
 
-    csv_file = animal + "_microsphere.csv"
+    csv_file = os.path.join("data", animal + "_microsphere.csv")
     df = pd.read_csv(csv_file)
     for k in df.keys():
         if study in k:
@@ -120,7 +127,8 @@ def print_params(config, param):
     print(str)
 
 
-def smooth(t, q, cutoff=10):
+def smooth(t, ti, qt, cutoff=10):
+    q = np.interp(ti, t, qt)
     N = len(q)
     freqs = fftfreq(N, d=t[1] - t[0])
     q_fft = fft(q)
@@ -133,7 +141,7 @@ def plot_data(study, data):
     _, ax = plt.subplots(2, 2, figsize=(15, 9))
     ax = ax.flatten()
     axt = [ax[i].twinx() for i in range(len(ax))]
-    markers = {"original": ".", "smoothed": "-"}
+    mk = {"original": ".", "smoothed": "-"}
 
     ax[0].set_xlabel("Pressure [mmHg]")
     ax[0].set_ylabel("Volume [mL]")
@@ -148,23 +156,19 @@ def plot_data(study, data):
         ax[i].set_xlabel("Time [s]")
 
     for k in ["original", "smoothed"]:
-        ax[0].plot(data[k]["p"], data[k]["vmyo"], f"k{markers[k]}", label=k)
-        ax[1].plot(
-            data[k]["t"], data[k]["p"], f"r{markers[k]}", label=f"Pressure ({k})"
-        )
+        ax[0].plot(data[k]["plad"], data[k]["vmyo"], f"k{mk[k]}")
+        ax[1].plot(data[k]["t"], data[k]["plad"] - data[k]["pven"], f"r{mk[k]}")
 
         for j, loc in enumerate(["myo", "lad"]):
             ax[j + 2].plot(
                 data[k]["t"],
                 data[k]["v" + loc],
-                f"b{markers[k]}",
-                label=f"Volume {loc} ({k})",
+                f"b{mk[k]}"
             )
             axt[j + 2].plot(
                 data[k]["t"],
                 data[k]["q" + loc],
-                f"m{markers[k]}",
-                label=f"Flow {loc} ({k})",
+                f"m{mk[k]}"
             )
 
     plt.tight_layout()
@@ -176,8 +180,10 @@ def plot_results(name, config, ti, plads, qlads, save=True):
     with open(name + ".json", "w") as f:
         json.dump(config, f, indent=2)
 
-    p_estim = get_sim(config, "pressure:v_i_p:BC_LAD")
-    q_estim = get_sim(config, "flow:v_i_p:BC_LAD")
+    p_estim = get_sim(config, "pressure:BC_Par:Ra")
+    q_estim_in = get_sim(config, "flow:J1:Cim")
+    q_estim_out = get_sim(config, "flow:Cim:BC_PLV")
+    q_estim = q_estim_in - q_estim_out
 
     _, axs = plt.subplots(2, 1, figsize=(12, 9))
 
@@ -193,7 +199,7 @@ def plot_results(name, config, ti, plads, qlads, save=True):
     axs[i].plot(ti, q_estim, "r--", label="simulated")
     axs[i].legend()
     axs[i].set_xlabel("Time [s]")
-    axs[i].set_ylabel("Flow [mmHg]")
+    axs[i].set_ylabel("Flow [ml/s]")
 
     plt.tight_layout()
     if save:
@@ -239,27 +245,24 @@ def estimate(animal, study):
     qlad *= dvcycle / dvlad
     vlad *= dvcycle / dvlad
 
-    # simulation parameters
+    # interoplate to simulation time points and smooth flow rate
     nt = 201
-
-    # interoplate to simulation time points
     ti = np.linspace(t[0], t[-1], nt)
-    pladi = np.interp(ti, t, plad)
-    vmyoi = np.interp(ti, t, vmyo)
-    qladi = np.interp(ti, t, qlad)
-
-    # calculate and smooth flow rate
-    plads = smooth(ti, pladi, cutoff=15)
-    qlads = smooth(ti, qladi, cutoff=15)
-    vmyos = smooth(ti, vmyoi, cutoff=8)
+    plads = smooth(t, ti, plad, cutoff=15)
+    pvens = smooth(t, ti, pven, cutoff=15)
+    qlads = smooth(t, ti, qlad, cutoff=15)
+    vmyos = smooth(t, ti, vmyo, cutoff=8)
     qmyos = np.gradient(vmyos, ti)
     vlads = cumulative_trapezoid(qlads, ti, initial=0)
+    tv = [0.0, ti[-1]]
+    pv = [0.0, 0.0]
 
     # create dictionary with all data
     data = {}
     data["original"] = {
         "t": t,
-        "p": plad,
+        "plad": plad,
+        "pven": pven,
         "vmyo": vmyo,
         "qmyo": qmyo,
         "qlad": qlad,
@@ -267,7 +270,8 @@ def estimate(animal, study):
     }
     data["smoothed"] = {
         "t": ti,
-        "p": plads,
+        "plad": plads,
+        "pven": pvens,
         "vmyo": vmyos,
         "qmyo": qmyos,
         "qlad": qlads,
@@ -275,34 +279,58 @@ def estimate(animal, study):
     }
     plot_data(name, data)
 
+    # read literature data
+    lit_path = os.path.join("data", "kim10b_table3.json")
+    lit_data = read_config(lit_path)
+
     # create 0D model
-    config = read_config("myocardium_bifurcation.json")
+    config = read_config("RCRCR_kim10b.json")
     config[str_param]["number_of_time_pts_per_cardiac_cycle"] = nt
 
     # set boundary conditions
     pini = {}
-    pini[("BC_myo", "t")] = (ti.tolist(), None, None)
-    pini[("BC_myo", "Q")] = (qmyos.tolist(), None, None)
-    pini[("BC_LAD", "t")] = (ti.tolist(), None, None)
-    pini[("BC_LAD", "P")] = (plads.tolist(), None, None)
-    set_params(config, pini)
+    pini[("BC_Par", "t")] = (ti.tolist(), None, None)
+    pini[("BC_Par", "P")] = (plads.tolist(), None, None)
+    pini[("BC_PLV", "t")] = (ti.tolist(), None, None)
+    pini[("BC_PLV", "P")] = (pvens.tolist(), None, None)
+    pini[("BC_Pv0", "t")] = (tv, None, None)
+    pini[("BC_Pv0", "P")] = (pv, None, None)
+    pini[("BC_Pv1", "t")] = (tv, None, None)
+    pini[("BC_Pv1", "P")] = (pv, None, None)
 
-    # initial guess
-    p0 = OrderedDict()
-    p0[("BC_distal", "P")] = (1e1, 1e-2, 1e2)
-    for i in ["v_myo", "v_i_p", "v_i_d"]:
-        p0[(i, "R_poiseuille")] = (1.0e0, 1e-6, 1e4)
-        # p0[(i, "C")] = (1.0e-3, 1e-12, 1e1)
-        # p0[(i, "L")] = (1.0e-9, 1e-12, 1e1)
+    # set parameters from kim10b
+    lit_vessel = lit_data["a"]
+    bounds = {"R": (1e-6, 1e6), "C": (1e-12, 1e12), "L": (1e-12, 1e12)}
+    param = ["Ra", "Ca", "Ra-micro", "Cim", "Rv"]
+    for p in param:
+        for vessel in config["vessels"]:
+            if vessel["vessel_name"] == p:
+                pini[(p, p[0])] = (lit_vessel[p]["R"], *bounds[p[0]])
+    set_params(config, pini)
+    # pdb.set_trace()
+    plot_results(name, config, ti, plads, qlads)
+
+    # # initial guess
+    # p0 = OrderedDict()
+    # # p0[("BC_distal", "P")] = (1e1, 1e-2, 1e1)
+    # for i in ["v_i_p", "v_i_d"]:#"v_myo", 
+    #     p0[(i, "R_poiseuille")] = (1.0e0, 1e-6, 1e6)
+    #     p0[(i, "C")] = (1.0e-1, 1e-12, 1e1)
+    #     p0[(i, "L")] = (1.0e-9, 1e-12, 1e1)
+    #     p0[(i, "stenosis_coefficient")] = (1.0e-6, 1e-12, 1e2)
+    # p0[("v_i_p", "C")] = (1.0e-3, 1e-12, 1e1)
+    # p0[("v_i_p", "R_poiseuille")] = (1.0e0, 1e-6, 1e12)
+    # p0[("v_i_d", "R_poiseuille")] = (1.0e0, 1e-6, 1e12)
     # p0[("BC", "Rp")] = (1.0e1, 1e-6, 1e6)
     # p0[("BC", "Rd")] = (1.0e1, 1e-6, 1e6)
     # p0[("BC", "C")] = (1.0e-3, 1e-9, 1e1)
-    set_params(config, p0)
+    # set_params(config, p0)
 
-    config_opt = optimize_zero_d(config, p0, ti, plads, qlads, verbose=1)
-    plot_results(name, config_opt, ti, plads, qlads)
+    # config_opt = optimize_zero_d(config, p0, ti, plads, qlads, verbose=1)
+    # plot_results(name, config_opt, ti, plads, qlads)
+    # pdb.set_trace()
     print(name)
-    print_params(config_opt, p0)
+    # print_params(config_opt, p0)
 
 
 def main():
