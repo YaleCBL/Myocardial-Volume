@@ -86,9 +86,9 @@ def get_sim(config, loc):
 
 def get_sim_out(config):
     q_sim_in = get_sim(config, "flow:J1:Cim")
-    # q_sim_out = get_sim(config, "flow:Cim:BC_PLV")
-    # return q_sim_out - q_sim_in
-    return q_sim_in
+    q_sim_out = get_sim(config, "flow:Cim:BC_PLV")
+    return q_sim_out - q_sim_in
+    # return q_sim_in
     # return get_sim(config, "flow:J1:Rv")
 
 
@@ -238,15 +238,15 @@ def plot_results(name, config, ti, plad, plv, qlads, fname, save=True):
         plt.show()
 
 
-def optimize_zero_d(config, p0, ti, plads, qlads, verbose=0):
+def optimize_zero_d(config, p0, ti, plads, qref, verbose=0):
     def cost_function(p):
         pset = set_params(config, p0, p)
         if verbose:
             for val in pset:
                 print(f"{val:.12e}", end="\t")
             if verbose > 1:
-                plot_results("iter", config, ti, plads, qlads, save=False)
-        obj = 1 - get_sim_out(config) / qlads / len(qlads)
+                plot_results("iter", config, ti, plads, qref, save=False)
+        obj = qref - get_sim_out(config)
         print(f"{np.linalg.norm(obj):.12e}", end="\n")
         return obj
 
@@ -255,7 +255,7 @@ def optimize_zero_d(config, p0, ti, plads, qlads, verbose=0):
         for k in p0.keys():
             print(f"{k[0][:5]} {k[1][0]}", end="\t")
         print("obj", end="\n")
-    res = least_squares(cost_function, initial, jac="2-point", method="lm", diff_step=1e-2)
+    res = least_squares(cost_function, initial, jac="2-point", method="lm", diff_step=1e-3)
     set_params(config, p0, res.x)
     return config
 
@@ -346,15 +346,15 @@ def estimate(animal, study):
         ("Ca", "C"),
         # ("Ra-micro", "R"),
         ("Cim", "C"),
-        ("Rv", "R"),
+        # ("Rv", "R"),
         ]
     for o in optimize:
         p0[o] = pini[o]
     set_params(config, p0)
-    plot_results(name, config, ti, plads, pvens, qlads, "literature")
+    plot_results(name, config, ti, plads, pvens, qmyos, "literature")
 
-    config_opt = optimize_zero_d(config, p0, ti, plads, qlads, verbose=1)
-    plot_results(name, config_opt, ti, plads, pvens, qlads, "simulated")
+    config_opt = optimize_zero_d(config, p0, ti, plads, qmyos, verbose=1)
+    plot_results(name, config_opt, ti, plads, pvens, qmyos, "simulated")
     print(name)
     print_params(config_opt, p0)
 
