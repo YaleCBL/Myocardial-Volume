@@ -20,6 +20,7 @@ from scipy.integrate import cumulative_trapezoid
 str_val = "zero_d_element_values"
 str_bc = "boundary_conditions"
 str_param = "simulation_parameters"
+str_time = "number_of_time_pts_per_cardiac_cycle"
 
 mmHg_to_Ba = 133.322
 Ba_to_mmHg = 1 / mmHg_to_Ba
@@ -87,9 +88,12 @@ def get_sim(config, loc):
 def get_sim_out(config):
     q_sim_in = get_sim(config, "flow:J1:Cim")
     q_sim_out = get_sim(config, "flow:Cim:BC_PLV")
-    return q_sim_out - q_sim_in
-    # return q_sim_in
-    # return get_sim(config, "flow:J1:Rv")
+    nt = config[str_param][str_time]
+    tmax = config['boundary_conditions'][0]['bc_values']['t'][-1]
+    ti = np.linspace(0.0, tmax, nt)
+    q_diff = q_sim_out - q_sim_in
+    vol = cumulative_trapezoid(q_diff, ti, initial=0)
+    return vol
 
 
 def get_valve_open(config):
@@ -244,11 +248,13 @@ def optimize_zero_d(config, p0, ti, plads, qref, verbose=0):
         pset = set_params(config, p0, p)
         if verbose:
             for val in pset:
-                print(f"{val:.12e}", end="\t")
+                print(f"{val:.1e}", end="\t")
             if verbose > 1:
                 plot_results("iter", config, ti, plads, qref, save=False)
-        obj = qref - get_sim_out(config)
-        print(f"{np.linalg.norm(obj):.12e}", end="\n")
+        # obj = qref - get_sim_out(config)
+        obj = qref.min() - get_sim_out(config).min()
+        if verbose:
+            print(f"{np.linalg.norm(obj):.1e}", end="\n")
         return obj
 
     initial = get_params(p0)
@@ -256,12 +262,12 @@ def optimize_zero_d(config, p0, ti, plads, qref, verbose=0):
         for k in p0.keys():
             print(f"{k[0][:5]} {k[1][0]}", end="\t")
         print("obj", end="\n")
-    res = least_squares(cost_function, initial, jac="2-point", method="lm", diff_step=1e-3)
+    res = least_squares(cost_function, initial, jac="2-point")#, method="lm", diff_step=1e-3
     set_params(config, p0, res.x)
     return config
 
 
-def estimate(animal, study):
+def estimate(animal, study, verb=0):
     # read measurements
     name = animal + "_" + study
     t, plad, pven, vmyo, qlad, dvcycle = read_data(animal, study)
@@ -313,7 +319,7 @@ def estimate(animal, study):
 
     # create 0D model
     config = read_config("RCRCR_kim10b.json")
-    config[str_param]["number_of_time_pts_per_cardiac_cycle"] = nt
+    config[str_param][str_time] = nt
 
     # set boundary conditions
     pini = {}
@@ -342,8 +348,8 @@ def estimate(animal, study):
     
     p0 = OrderedDict()
     optimize = [
-        ("Ra", "R"),
-        ("Ca", "C"),
+        # ("Ra", "R"),
+        # ("Ca", "C"),
         # ("Ra-micro", "R"),
         ("Cim", "C"),
         # ("Rv", "R"),
@@ -351,10 +357,12 @@ def estimate(animal, study):
     for o in optimize:
         p0[o] = pini[o]
     set_params(config, p0)
-    plot_results(name, config, ti, plads, pvens, qmyos, "literature")
 
-    config_opt = optimize_zero_d(config, p0, ti, plads, qmyos, verbose=1)
-    plot_results(name, config_opt, ti, plads, pvens, qmyos, "simulated")
+    vmyos -= vmyos[0]
+    plot_results(name, config, ti, plads, pvens, vmyos, "literature")
+
+    config_opt = optimize_zero_d(config, p0, ti, plads, vmyos, verbose=verb)
+    plot_results(name, config_opt, ti, plads, pvens, vmyos, "simulated")
     print(name)
     print_params(config_opt, p0)
 
@@ -369,7 +377,7 @@ def main():
         # "mod_sten_dob",
     ]
     for study in studies:
-        estimate(animal, study)
+        estimate(animal, study, verb=1)
 
 
 if __name__ == "__main__":
