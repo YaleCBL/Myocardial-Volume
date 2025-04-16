@@ -152,13 +152,14 @@ def print_params(config, param):
 
 
 def smooth(t, ti, qt, cutoff=10):
-    q = np.interp(ti, t, qt)
-    N = len(q)
+    N = len(qt)
     freqs = fftfreq(N, d=t[1] - t[0])
-    q_fft = fft(q)
+    q_fft = fft(qt)
     q_fft[np.abs(freqs) > cutoff] = 0
     qs = np.real(ifft(q_fft))
-    return qs
+    dqs_fft = q_fft * (2j * np.pi * freqs)
+    dqs = np.real(ifft(dqs_fft))
+    return np.interp(ti, t, qs), np.interp(ti, t, dqs)
 
 
 def plot_data(study, data):
@@ -276,11 +277,10 @@ def estimate(animal, study):
     # interoplate to simulation time points and smooth flow rate
     nt = 201
     ti = np.linspace(t[0], t[-1], nt)
-    plads = smooth(t, ti, plad, cutoff=15)
-    pvens = smooth(t, ti, pven, cutoff=15)
-    qlads = smooth(t, ti, qlad, cutoff=15)
-    vmyos = smooth(t, ti, vmyo, cutoff=8)
-    qmyos = np.gradient(vmyos, ti)
+    plads, _ = smooth(t, ti, plad, cutoff=15)
+    pvens, _ = smooth(t, ti, pven, cutoff=15)
+    qlads, _ = smooth(t, ti, qlad, cutoff=15)
+    vmyos, qmyos = smooth(t, ti, vmyo, cutoff=15)
     vlads = cumulative_trapezoid(qlads, ti, initial=0)
     tv = [0.0, ti[-1]]
     pv = [0.0, 0.0]
