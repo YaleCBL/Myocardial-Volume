@@ -84,6 +84,14 @@ def get_sim(config, loc):
     return res
 
 
+def get_sim_out(config):
+    q_sim_in = get_sim(config, "flow:J1:Cim")
+    # q_sim_out = get_sim(config, "flow:Cim:BC_PLV")
+    # return q_sim_out - q_sim_in
+    return q_sim_in
+    # return get_sim(config, "flow:J1:Rv")
+
+
 def get_valve_open(config):
     sim = pysvzerod.simulate(config)
     q = []
@@ -191,15 +199,13 @@ def plot_data(study, data):
     plt.close()
 
 
-def plot_results(name, config, ti, plad, plv, qlads, save=True):
+def plot_results(name, config, ti, plad, plv, qlads, fname, save=True):
     with open(name + ".json", "w") as f:
         json.dump(config, f, indent=2)
 
     plad_sim = get_sim(config, "pressure:BC_Par:Ra")
     plv_sim = get_sim(config, "pressure:Cim:BC_PLV")
-    q_sim_in = get_sim(config, "flow:J1:Cim")
-    q_sim_out = get_sim(config, "flow:Cim:BC_PLV")
-    q_sim = q_sim_out - q_sim_in
+    q_sim = get_sim_out(config)
 
     _, axs = plt.subplots(3, 1, figsize=(12, 9))
 
@@ -226,7 +232,7 @@ def plot_results(name, config, ti, plad, plv, qlads, save=True):
 
     plt.tight_layout()
     if save:
-        plt.savefig(name + "_simulated.pdf")
+        plt.savefig(name + "_" + fname + ".pdf")
         plt.close()
     else:
         plt.show()
@@ -237,12 +243,11 @@ def optimize_zero_d(config, p0, ti, plads, qlads, verbose=0):
         pset = set_params(config, p0, p)
         if verbose:
             for val in pset:
-                print(f"{val:.1e}", end="\t")
+                print(f"{val:.12e}", end="\t")
             if verbose > 1:
                 plot_results("iter", config, ti, plads, qlads, save=False)
-        qsim = get_sim(config, "flow:v_i_p:BC_LAD")
-        obj = qlads - qsim
-        print(f"{np.linalg.norm(obj):.1e}", end="\n")
+        obj = 1 - get_sim_out(config) / qlads / len(qlads)
+        print(f"{np.linalg.norm(obj):.12e}", end="\n")
         return obj
 
     initial = get_params(p0)
@@ -250,7 +255,7 @@ def optimize_zero_d(config, p0, ti, plads, qlads, verbose=0):
         for k in p0.keys():
             print(f"{k[0][:5]} {k[1][0]}", end="\t")
         print("obj", end="\n")
-    res = least_squares(cost_function, initial, jac="2-point", method="lm")
+    res = least_squares(cost_function, initial, jac="2-point", method="lm", diff_step=1e-2)
     set_params(config, p0, res.x)
     return config
 
@@ -320,40 +325,38 @@ def estimate(animal, study):
     pini[("BC_Pv0", "P")] = (pv, None, None)
     pini[("BC_Pv1", "t")] = (tv, None, None)
     pini[("BC_Pv1", "P")] = (pv, None, None)
+    set_params(config, pini)
 
-    # set parameters from kim10b
+    # set initial parameter guess from kim10b
     lit_data = read_lit_data("kim10b_table3.json")
     lit_vessel = lit_data["a"]
-    bounds = {"R": (1e-6, 1e6), "C": (1e-12, 1e12), "L": (1e-12, 1e12)}
+    status = "R" # rest
+    bounds = {"R": (1e0, 1e12), "C": (1e-12, 1e-3), "L": (1e-12, 1e0)}
     param = ["Ra", "Ca", "Ra-micro", "Cim", "Rv"]
+
     for p in param:
         for vessel in config["vessels"]:
             if vessel["vessel_name"] == p:
-                pini[(p, p[0])] = (lit_vessel[p]["R"], *bounds[p[0]])
+                pini[(p, p[0])] = (lit_vessel[p][status], *bounds[p[0]])
     set_params(config, pini)
-    # pdb.set_trace()
-    plot_results(name, config, ti, plads, pvens, qlads)
+    
+    p0 = OrderedDict()
+    optimize = [
+        ("Ra", "R"),
+        ("Ca", "C"),
+        # ("Ra-micro", "R"),
+        ("Cim", "C"),
+        ("Rv", "R"),
+        ]
+    for o in optimize:
+        p0[o] = pini[o]
+    set_params(config, p0)
+    plot_results(name, config, ti, plads, pvens, qlads, "literature")
 
-    # # initial guess
-    # p0 = OrderedDict()
-    # # p0[("BC_distal", "P")] = (1e1, 1e-2, 1e1)
-    # for i in ["v_i_p", "v_i_d"]:#"v_myo", 
-    #     p0[(i, "R_poiseuille")] = (1.0e0, 1e-6, 1e6)
-    #     p0[(i, "C")] = (1.0e-1, 1e-12, 1e1)
-    #     p0[(i, "L")] = (1.0e-9, 1e-12, 1e1)
-    #     p0[(i, "stenosis_coefficient")] = (1.0e-6, 1e-12, 1e2)
-    # p0[("v_i_p", "C")] = (1.0e-3, 1e-12, 1e1)
-    # p0[("v_i_p", "R_poiseuille")] = (1.0e0, 1e-6, 1e12)
-    # p0[("v_i_d", "R_poiseuille")] = (1.0e0, 1e-6, 1e12)
-    # p0[("BC", "Rp")] = (1.0e1, 1e-6, 1e6)
-    # p0[("BC", "Rd")] = (1.0e1, 1e-6, 1e6)
-    # p0[("BC", "C")] = (1.0e-3, 1e-9, 1e1)
-    # set_params(config, p0)
-
-    # config_opt = optimize_zero_d(config, p0, ti, plads, qlads, verbose=1)
-    # plot_results(name, config_opt, ti, plads, qlads)
+    config_opt = optimize_zero_d(config, p0, ti, plads, qlads, verbose=1)
+    plot_results(name, config_opt, ti, plads, pvens, qlads, "simulated")
     print(name)
-    # print_params(config_opt, p0)
+    print_params(config_opt, p0)
 
 
 def main():
