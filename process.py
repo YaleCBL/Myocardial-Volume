@@ -228,21 +228,21 @@ def plot_results(name, config, ti, plad, plv, qlads, fname, save=True):
     axs[i].plot(ti, plad*Ba_to_mmHg, "k--", label="measured (smoothed)")
     axs[i].legend()
     axs[i].set_xlabel("Time [s]")
-    axs[i].set_ylabel("Pressure [mmHg]")
+    axs[i].set_ylabel("LAD Pressure [mmHg]")
 
     i = 1
     axs[i].plot(ti, plv_sim*Ba_to_mmHg, "r-", label="simulated")
     axs[i].plot(ti, plv*Ba_to_mmHg, "k--", label="measured (smoothed)")
     axs[i].legend()
     axs[i].set_xlabel("Time [s]")
-    axs[i].set_ylabel("Pressure [mmHg]")
+    axs[i].set_ylabel("LV Pressure [mmHg]")
 
     i = 2
     axs[i].plot(ti, q_sim, "r-", label="simulated")
     axs[i].plot(ti, qlads, "k--", label="measured (smoothed)")
     axs[i].legend()
     axs[i].set_xlabel("Time [s]")
-    axs[i].set_ylabel("Flow [ml/s]")
+    axs[i].set_ylabel("Myocardial Volume [ml]")
 
     plt.tight_layout()
     if save:
