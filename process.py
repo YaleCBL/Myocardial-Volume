@@ -87,7 +87,7 @@ def get_sim(config, loc):
 
 def get_sim_out(config):
     q_sim_in = get_sim(config, "flow:J1:Cim")
-    q_sim_out = get_sim(config, "flow:Cim:BC_PLV")
+    q_sim_out = get_sim(config, "flow:Cim:BC_LV")
     nt = config[str_param][str_time]
     tmax = config['boundary_conditions'][0]['bc_values']['t'][-1]
     ti = np.linspace(0.0, tmax, nt)
@@ -151,7 +151,16 @@ def print_params(config, param):
             for vs in config["vessels"]:
                 if vs["vessel_name"] == id:
                     val = vs[str_val][k]
-        str += id + " " + k[0] + f" {val:.1e} "
+        # convert units
+        if k == "R":
+            val *= Ba_to_mmHg
+            unit = "mmHg*s/ml"
+        elif k == "C":
+            val *= 1 / Ba_to_mmHg
+            unit = "ml/mmHg"
+        else:
+            raise ValueError(f"Unknown parameter {k}")
+        str += id + " " + k[0] + f" {val:.1e} " + unit
     print(str)
 
 
@@ -208,8 +217,8 @@ def plot_results(name, config, ti, plad, plv, qlads, fname, save=True):
     with open(name + ".json", "w") as f:
         json.dump(config, f, indent=2)
 
-    plad_sim = get_sim(config, "pressure:BC_Par:Ra")
-    plv_sim = get_sim(config, "pressure:Cim:BC_PLV")
+    plad_sim = get_sim(config, "pressure:BC_LAD:Ra")
+    plv_sim = get_sim(config, "pressure:Cim:BC_LV")
     q_sim = get_sim_out(config)
 
     _, axs = plt.subplots(3, 1, figsize=(12, 9))
@@ -323,10 +332,10 @@ def estimate(animal, study, verb=0):
 
     # set boundary conditions
     pini = {}
-    pini[("BC_Par", "t")] = (ti.tolist(), None, None)
-    pini[("BC_Par", "P")] = (plads.tolist(), None, None)
-    pini[("BC_PLV", "t")] = (ti.tolist(), None, None)
-    pini[("BC_PLV", "P")] = (pvens.tolist(), None, None)
+    pini[("BC_LAD", "t")] = (ti.tolist(), None, None)
+    pini[("BC_LAD", "P")] = (plads.tolist(), None, None)
+    pini[("BC_LV", "t")] = (ti.tolist(), None, None)
+    pini[("BC_LV", "P")] = (pvens.tolist(), None, None)
     pini[("BC_Pv0", "t")] = (tv, None, None)
     pini[("BC_Pv0", "P")] = (pv, None, None)
     pini[("BC_Pv1", "t")] = (tv, None, None)
@@ -371,13 +380,13 @@ def main():
     animal = "DSEA08"
     studies = [
         "baseline",
-        # "mild_sten",
-        # "mild_sten_dob",
-        # "mod_sten",
-        # "mod_sten_dob",
+        "mild_sten",
+        "mild_sten_dob",
+        "mod_sten",
+        "mod_sten_dob",
     ]
     for study in studies:
-        estimate(animal, study, verb=1)
+        estimate(animal, study, verb=0)
 
 
 if __name__ == "__main__":

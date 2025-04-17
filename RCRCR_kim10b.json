@@ -9,12 +9,12 @@
     },
     "boundary_conditions": [
         {
-            "bc_name": "BC_Par",
+            "bc_name": "BC_LAD",
             "bc_type": "PRESSURE",
-            "bc_values": {"P": [10000.0, 10000.0], "t": [0.0, 1.0]}
+            "bc_values": {"P": [1.0, 1.0], "t": [0.0, 1.0]}
         },
         {
-            "bc_name": "BC_PLV",
+            "bc_name": "BC_LV",
             "bc_type": "PRESSURE",
             "bc_values": {"P": [5000.0, 5000.0], "t": [0.0, 1.0]}
         },
@@ -35,7 +35,7 @@
             "vessel_name": "Ra",
             "zero_d_element_type": "Resistance",
             "zero_d_element_values": {"R": 1000.0},
-            "boundary_conditions": {"inlet": "BC_Par"}
+            "boundary_conditions": {"inlet": "BC_LAD"}
         },
         {
             "vessel_id": 1,
@@ -55,7 +55,7 @@
             "vessel_name": "Cim",
             "zero_d_element_type": "Capacitance",
             "zero_d_element_values": {"C": 0.0001},
-            "boundary_conditions": {"outlet": "BC_PLV"}
+            "boundary_conditions": {"outlet": "BC_LV"}
         },
         {
             "vessel_id": 4,
