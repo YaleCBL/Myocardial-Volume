@@ -35,7 +35,7 @@ def read_data(animal, study):
         if "mmHg" in field:
             df[field.replace("mmHg", "Ba")] = df[field] * mmHg_to_Ba
 
-    plad = df["AoP [Ba]"].to_numpy()
+    pat = df["AoP [Ba]"].to_numpy()
     pven = df["LVP [Ba]"].to_numpy()
     vmyo = df["tissue vol ischemic [ml]"].to_numpy()
     qlad = df["LAD Flow [mL/s]"].to_numpy()
@@ -46,7 +46,7 @@ def read_data(animal, study):
         if study in k:
             dvcycle = df[k][0]
             break
-    return t, plad, pven, vmyo, qlad, dvcycle
+    return t, pat, pven, vmyo, qlad, dvcycle
 
 
 def read_lit_data(fname):
@@ -67,16 +67,6 @@ def read_config(fname):
     with open(fname, "r") as f:
         return json.load(f)
 
-
-def get_v_sim(config):
-    sim = pysvzerod.simulate(config)
-    name = "flow:pa:RC1"
-    y = sim[sim["name"] == name]["y"].to_numpy()
-    tmax = config[str_bc][0]["bc_values"]["t"][-1]
-    nt = config[str_param]["number_of_time_pts_per_cardiac_cycle"]
-    return np.cumsum(y) * tmax / nt
-
-
 def get_sim(config, loc):
     sim = pysvzerod.simulate(config)
     res = sim[sim["name"] == loc]["y"].to_numpy()
@@ -84,15 +74,19 @@ def get_sim(config, loc):
         raise ValueError(f"Result {loc} not found. Options are:\n" + ", ".join(np.unique(sim["name"]).tolist()))
     return res
 
+def get_sim_p(config):
+    return get_sim(config, "pressure:BC_AT:Rin")
+
 
 def get_sim_out(config):
-    q_sim_in = get_sim(config, "flow:J1:Cim")
-    q_sim_out = get_sim(config, "flow:Cim:BC_LV")
+    q_sim_in = get_sim(config, "flow:BC_AT:Rin")
+    q_sim_out = get_sim(config, "flow:Rout:BC_LV")
     nt = config[str_param][str_time]
     tmax = config['boundary_conditions'][0]['bc_values']['t'][-1]
     ti = np.linspace(0.0, tmax, nt)
     q_diff = q_sim_out - q_sim_in
-    vol = cumulative_trapezoid(q_diff, ti, initial=0)
+    # vol = cumulative_trapezoid(q_diff, ti, initial=0)
+    vol = cumulative_trapezoid(q_sim_in, ti, initial=0)
     return vol
 
 
@@ -181,7 +175,7 @@ def plot_data(study, data):
     axt = [ax[i].twinx() for i in range(len(ax))]
     mk = {"original": ".", "smoothed": "-"}
 
-    ax[0].set_xlabel("LAD Pressure [mmHg]")
+    ax[0].set_xlabel("AT Pressure [mmHg]")
     ax[0].set_ylabel("Volume [mL]")
     ax[1].set_ylabel("Delta pressure [mmHg]")
 
@@ -193,8 +187,8 @@ def plot_data(study, data):
         ax[i].set_xlabel("Time [s]")
 
     for k in ["original", "smoothed"]:
-        ax[0].plot(data[k]["plad"]*Ba_to_mmHg, data[k]["vmyo"], f"k{mk[k]}")
-        ax[1].plot(data[k]["t"], (data[k]["plad"] - data[k]["pven"])*Ba_to_mmHg, f"r{mk[k]}")
+        ax[0].plot(data[k]["pat"]*Ba_to_mmHg, data[k]["vmyo"], f"k{mk[k]}")
+        ax[1].plot(data[k]["t"], (data[k]["pat"] - data[k]["pven"])*Ba_to_mmHg, f"r{mk[k]}")
 
         for j, loc in enumerate(["myo", "lad"]):
             ax[j + 2].plot(
@@ -213,22 +207,22 @@ def plot_data(study, data):
     plt.close()
 
 
-def plot_results(name, config, ti, plad, plv, qlads, fname, save=True):
+def plot_results(name, config, ti, pat, plv, qlads, fname, save=True):
     with open(name + ".json", "w") as f:
         json.dump(config, f, indent=2)
 
-    plad_sim = get_sim(config, "pressure:BC_LAD:Ra")
-    plv_sim = get_sim(config, "pressure:Cim:BC_LV")
+    pat_sim = get_sim(config, "pressure:BC_AT:Rin")
+    plv_sim = get_sim(config, "pressure:Rout:BC_LV")
     q_sim = get_sim_out(config)
 
     _, axs = plt.subplots(3, 1, figsize=(12, 9))
 
     i = 0
-    axs[i].plot(ti, plad_sim*Ba_to_mmHg, "r-", label="simulated")
-    axs[i].plot(ti, plad*Ba_to_mmHg, "k--", label="measured (smoothed)")
+    axs[i].plot(ti, pat_sim*Ba_to_mmHg, "r-", label="simulated")
+    axs[i].plot(ti, pat*Ba_to_mmHg, "k--", label="measured (smoothed)")
     axs[i].legend()
     axs[i].set_xlabel("Time [s]")
-    axs[i].set_ylabel("LAD Pressure [mmHg]")
+    axs[i].set_ylabel("AT Pressure [mmHg]")
 
     i = 1
     axs[i].plot(ti, plv_sim*Ba_to_mmHg, "r-", label="simulated")
@@ -252,16 +246,18 @@ def plot_results(name, config, ti, plad, plv, qlads, fname, save=True):
         plt.show()
 
 
-def optimize_zero_d(config, p0, ti, plads, qref, verbose=0):
+def optimize_zero_d(config, p0, ti, pats, qref, verbose=0):
     def cost_function(p):
         pset = set_params(config, p0, p)
         if verbose:
             for val in pset:
                 print(f"{val:.1e}", end="\t")
             if verbose > 1:
-                plot_results("iter", config, ti, plads, qref, save=False)
-        # obj = qref - get_sim_out(config)
-        obj = qref.min() - get_sim_out(config).min()
+                plot_results("iter", config, ti, pats, qref, save=False)
+        # qmin = qref.min() - get_sim_out(config).min()
+        # qend = qref[-1] - get_sim_out(config)[-1]
+        # obj = [qmin, qend]
+        obj = qref - get_sim_out(config)
         if verbose:
             print(f"{np.linalg.norm(obj):.1e}", end="\n")
         return obj
@@ -279,7 +275,7 @@ def optimize_zero_d(config, p0, ti, plads, qref, verbose=0):
 def estimate(animal, study, verb=0):
     # read measurements
     name = animal + "_" + study
-    t, plad, pven, vmyo, qlad, dvcycle = read_data(animal, study)
+    t, pat, pven, vmyo, qlad, dvcycle = read_data(animal, study)
     qmyo = np.gradient(vmyo, t)
     vlad = cumulative_trapezoid(qlad, t, initial=0)
 
@@ -292,7 +288,7 @@ def estimate(animal, study, verb=0):
     # interoplate to simulation time points and smooth flow rate
     nt = 201
     ti = np.linspace(t[0], t[-1], nt)
-    plads, _ = smooth(t, ti, plad, cutoff=15)
+    pats, _ = smooth(t, ti, pat, cutoff=15)
     pvens, _ = smooth(t, ti, pven, cutoff=15)
     qlads, _ = smooth(t, ti, qlad, cutoff=15)
     vmyos, qmyos = smooth(t, ti, vmyo, cutoff=15)
@@ -304,7 +300,7 @@ def estimate(animal, study, verb=0):
     data = {}
     data["original"] = {
         "t": t,
-        "plad": plad,
+        "pat": pat,
         "pven": pven,
         "vmyo": vmyo,
         "qmyo": qmyo,
@@ -313,7 +309,7 @@ def estimate(animal, study, verb=0):
     }
     data["smoothed"] = {
         "t": ti,
-        "plad": plads,
+        "pat": pats,
         "pven": pvens,
         "vmyo": vmyos,
         "qmyo": qmyos,
@@ -327,51 +323,51 @@ def estimate(animal, study, verb=0):
     lit_data = read_config(lit_path)
 
     # create 0D model
-    config = read_config("RCRCR_kim10b.json")
+    config = read_config("WK2.json")
     config[str_param][str_time] = nt
 
     # set boundary conditions
     pini = {}
-    pini[("BC_LAD", "t")] = (ti.tolist(), None, None)
-    pini[("BC_LAD", "P")] = (plads.tolist(), None, None)
+    pini[("BC_AT", "t")] = (ti.tolist(), None, None)
+    pini[("BC_AT", "P")] = (pats.tolist(), None, None)
     pini[("BC_LV", "t")] = (ti.tolist(), None, None)
     pini[("BC_LV", "P")] = (pvens.tolist(), None, None)
-    pini[("BC_Pv0", "t")] = (tv, None, None)
-    pini[("BC_Pv0", "P")] = (pv, None, None)
-    pini[("BC_Pv1", "t")] = (tv, None, None)
-    pini[("BC_Pv1", "P")] = (pv, None, None)
     set_params(config, pini)
 
     # set initial parameter guess from kim10b
     lit_data = read_lit_data("kim10b_table3.json")
     lit_vessel = lit_data["a"]
     status = "R" # rest
-    bounds = {"R": (1e0, 1e12), "C": (1e-12, 1e-3), "L": (1e-12, 1e0)}
-    param = ["Ra", "Ca", "Ra-micro", "Cim", "Rv"]
+    bounds = {"R": (1e3, 1e6), "C": (1e-9, 1e-3), "L": (1e-12, 1e0)}
+    param = ["RL", "L", "RC", "C"]
 
-    for p in param:
-        for vessel in config["vessels"]:
-            if vessel["vessel_name"] == p:
-                pini[(p, p[0])] = (lit_vessel[p][status], *bounds[p[0]])
+    # for p in param:
+    #     for vessel in config["vessels"]:
+    #         if vessel["vessel_name"] == p:
+    #             # pini[(p, p[0])] = (lit_vessel[p][status], *bounds[p[0]])
+    #             pini[(p, p[0])] = (bounds[p[0]][1], *bounds[p[0]])
+    
+    # pdb.set_trace()
+    pini[("RC", "C")] = (1e-5, *bounds["C"])
+    pini[("RC", "R")] = (1e+5, *bounds["R"])
+    pini[("Rin", "R")] = (1e+4, *bounds["R"])
     set_params(config, pini)
     
     p0 = OrderedDict()
     optimize = [
-        # ("Ra", "R"),
-        # ("Ca", "C"),
-        # ("Ra-micro", "R"),
-        ("Cim", "C"),
-        # ("Rv", "R"),
+        ("RC", "C"),
+        ("RC", "R"),
+        ("Rin", "R"),
         ]
     for o in optimize:
         p0[o] = pini[o]
     set_params(config, p0)
 
     vmyos -= vmyos[0]
-    plot_results(name, config, ti, plads, pvens, vmyos, "literature")
+    plot_results(name, config, ti, pats, pvens, vmyos, "literature")
 
-    config_opt = optimize_zero_d(config, p0, ti, plads, vmyos, verbose=verb)
-    plot_results(name, config_opt, ti, plads, pvens, vmyos, "simulated")
+    config_opt = optimize_zero_d(config, p0, ti, pats, vmyos, verbose=verb)
+    plot_results(name, config_opt, ti, pats, pvens, vmyos, "simulated")
     print(name)
     print_params(config_opt, p0)
 
@@ -380,13 +376,13 @@ def main():
     animal = "DSEA08"
     studies = [
         "baseline",
-        "mild_sten",
-        "mild_sten_dob",
-        "mod_sten",
-        "mod_sten_dob",
+        # "mild_sten",
+        # "mild_sten_dob",
+        # "mod_sten",
+        # "mod_sten_dob",
     ]
     for study in studies:
-        estimate(animal, study, verb=0)
+        estimate(animal, study, verb=1)
 
 
 if __name__ == "__main__":
