@@ -75,12 +75,12 @@ def get_sim(config, loc):
     return res
 
 def get_sim_p(config):
-    return get_sim(config, "pressure:BC_AT:Rin")
+    return get_sim(config, "pressure:BC_AT:RC")
 
 
 def get_sim_out(config):
-    q_sim_in = get_sim(config, "flow:BC_AT:Rin")
-    q_sim_out = get_sim(config, "flow:Rout:BC_LV")
+    q_sim_in = get_sim(config, "flow:BC_AT:RC")
+    q_sim_out = get_sim(config, "flow:RC:BC_LV")
     nt = config[str_param][str_time]
     tmax = config['boundary_conditions'][0]['bc_values']['t'][-1]
     ti = np.linspace(0.0, tmax, nt)
@@ -154,7 +154,7 @@ def print_params(config, param):
             unit = "ml/mmHg"
         else:
             raise ValueError(f"Unknown parameter {k}")
-        str += id + " " + k[0] + f" {val:.1e} " + unit
+        str += id + " " + k[0] + f" {val:.1e} " + unit + "\n"
     print(str)
 
 
@@ -211,8 +211,8 @@ def plot_results(name, config, ti, pat, plv, qlads, fname, save=True):
     with open(name + ".json", "w") as f:
         json.dump(config, f, indent=2)
 
-    pat_sim = get_sim(config, "pressure:BC_AT:Rin")
-    plv_sim = get_sim(config, "pressure:Rout:BC_LV")
+    pat_sim = get_sim(config, "pressure:BC_AT:RC")
+    plv_sim = get_sim(config, "pressure:RC:BC_LV")
     q_sim = get_sim_out(config)
 
     _, axs = plt.subplots(3, 1, figsize=(12, 9))
@@ -254,10 +254,11 @@ def optimize_zero_d(config, p0, ti, pats, qref, verbose=0):
                 print(f"{val:.1e}", end="\t")
             if verbose > 1:
                 plot_results("iter", config, ti, pats, qref, save=False)
-        # qmin = qref.min() - get_sim_out(config).min()
-        # qend = qref[-1] - get_sim_out(config)[-1]
-        # obj = [qmin, qend]
-        obj = qref - get_sim_out(config)
+        tmin = qref.argmin()
+        qmin = qref[tmin] - get_sim_out(config)[tmin]
+        qend = qref[-1] - get_sim_out(config)[-1]
+        obj = [qmin, qend]
+        # obj = qref - get_sim_out(config)
         if verbose:
             print(f"{np.linalg.norm(obj):.1e}", end="\n")
         return obj
@@ -323,7 +324,7 @@ def estimate(animal, study, verb=0):
     lit_data = read_config(lit_path)
 
     # create 0D model
-    config = read_config("WK2.json")
+    config = read_config("WK1.json")
     config[str_param][str_time] = nt
 
     # set boundary conditions
@@ -338,7 +339,7 @@ def estimate(animal, study, verb=0):
     lit_data = read_lit_data("kim10b_table3.json")
     lit_vessel = lit_data["a"]
     status = "R" # rest
-    bounds = {"R": (1e3, 1e6), "C": (1e-9, 1e-3), "L": (1e-12, 1e0)}
+    bounds = {"R": (1e3, 1e5), "C": (1e-12, 1e-4), "L": (1e-12, 1e12)}
     param = ["RL", "L", "RC", "C"]
 
     # for p in param:
@@ -350,14 +351,14 @@ def estimate(animal, study, verb=0):
     # pdb.set_trace()
     pini[("RC", "C")] = (1e-5, *bounds["C"])
     pini[("RC", "R")] = (1e+5, *bounds["R"])
-    pini[("Rin", "R")] = (1e+4, *bounds["R"])
+    # pini[("Rin", "R")] = (1e+5, *bounds["R"])
     set_params(config, pini)
     
     p0 = OrderedDict()
     optimize = [
         ("RC", "C"),
         ("RC", "R"),
-        ("Rin", "R"),
+        # ("Rin", "R"),
         ]
     for o in optimize:
         p0[o] = pini[o]
@@ -376,13 +377,13 @@ def main():
     animal = "DSEA08"
     studies = [
         "baseline",
-        # "mild_sten",
-        # "mild_sten_dob",
-        # "mod_sten",
-        # "mod_sten_dob",
+        "mild_sten",
+        "mild_sten_dob",
+        "mod_sten",
+        "mod_sten_dob",
     ]
     for study in studies:
-        estimate(animal, study, verb=1)
+        estimate(animal, study, verb=0)
 
 
 if __name__ == "__main__":

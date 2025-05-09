@@ -1,0 +1,31 @@
+{
+    "simulation_parameters": {
+        "number_of_cardiac_cycles": 30,
+        "number_of_time_pts_per_cardiac_cycle": 101,
+        "output_all_cycles": false,
+        "output_derivative": true,
+        "output_variable_based": true,
+        "steady_initial": true
+    },
+    "boundary_conditions": [
+        {
+            "bc_name": "BC_AT",
+            "bc_type": "PRESSURE",
+            "bc_values": {"P": [0.0, 1.0], "t": [0.0, 1.0]}
+        },
+        {
+            "bc_name": "BC_LV",
+            "bc_type": "PRESSURE",
+            "bc_values": {"P": [0.0, 0.0], "t": [0.0, 1.0]}
+        }
+    ],
+    "vessels": [
+        {
+            "vessel_id": 0,
+            "vessel_name": "RC",
+            "zero_d_element_type": "SerialRC",
+            "zero_d_element_values": {"R": 0.0, "C": 0.0},
+            "boundary_conditions": {"inlet": "BC_AT", "outlet": "BC_LV"}
+        }
+    ]
+}
