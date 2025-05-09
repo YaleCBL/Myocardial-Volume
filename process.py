@@ -10,6 +10,7 @@ import copy
 import numpy as np
 import json
 from collections import OrderedDict
+from collections import defaultdict
 from scipy.interpolate import interp1d
 from scipy.optimize import minimize, least_squares, Bounds
 from scipy.signal import savgol_filter
@@ -365,12 +366,15 @@ def estimate(animal, study, verb=0):
     set_params(config, p0)
 
     vmyos -= vmyos[0]
-    plot_results(name, config, ti, pats, pvens, vmyos, "literature")
+    # plot_results(name, config, ti, pats, pvens, vmyos, "literature")
 
     config_opt = optimize_zero_d(config, p0, ti, pats, vmyos, verbose=verb)
     plot_results(name, config_opt, ti, pats, pvens, vmyos, "simulated")
     print(name)
     print_params(config_opt, p0)
+
+    res_opt = config_opt["vessels"][0]["zero_d_element_values"]
+    return res_opt["R"], res_opt["C"]
 
 
 def main():
@@ -379,12 +383,37 @@ def main():
         "baseline",
         "mild_sten",
         "mild_sten_dob",
-        "mod_sten",
+        "mod_sten", 
         "mod_sten_dob",
     ]
+    optimized = defaultdict(dict)
     for study in studies:
-        estimate(animal, study, verb=0)
+        res, cap = estimate(animal, study, verb=0)
+        optimized[study]["R"] = res
+        optimized[study]["C"] = cap
 
+    # Create subplot for R and C
+    _, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # Plot resistances
+    resistances = [optimized[s]["R"] * Ba_to_mmHg for s in studies]
+    ax1.bar(range(len(studies)), resistances)
+    ax1.set_xticks(range(len(studies)))
+    ax1.set_xticklabels(studies, rotation=45)
+    ax1.set_ylabel('Resistance [mmHg*s/ml]')
+    ax1.set_title(animal + ' Optimized Resistances')
+
+    # Plot capacitances 
+    capacitances = [optimized[s]["C"] / Ba_to_mmHg for s in studies]
+    ax2.bar(range(len(studies)), capacitances)
+    ax2.set_xticks(range(len(studies)))
+    ax2.set_xticklabels(studies, rotation=45) 
+    ax2.set_ylabel('Capacitance [ml/mmHg]')
+    ax2.set_title(animal + ' Optimized Capacitances')
+
+    plt.tight_layout()
+    plt.savefig(f'{animal}_RC_parameters.pdf')
+    plt.close()
 
 if __name__ == "__main__":
     main()
