@@ -154,7 +154,7 @@ def print_params(config, param):
             val *= 1 / Ba_to_mmHg
             unit = "ml/mmHg"
         else:
-            raise ValueError(f"Unknown parameter {k}")
+            unit = "cgs"
         str += id + " " + k[0] + f" {val:.1e} " + unit + "\n"
     print(str)
 
@@ -208,58 +208,79 @@ def plot_data(study, data):
     plt.close()
 
 
-def plot_results(name, config, ti, pat, plv, qlads, fname, save=True):
-    with open(name + ".json", "w") as f:
-        json.dump(config, f, indent=2)
+def plot_results(animal, config, data):
+    _, axs = plt.subplots(3, len(config), figsize=(16, 9), sharex="col", sharey="row")
+    if len(config) == 1:
+        axs = axs.reshape(-1,1)
+    for j, study in enumerate(config.keys()):
+        with open(f'{animal}_{study}.json', "w") as f:
+            json.dump(config[study], f, indent=2)
 
-    pat_sim = get_sim(config, "pressure:BC_AT:RC")
-    plv_sim = get_sim(config, "pressure:RC:BC_LV")
-    q_sim = get_sim_out(config)
+        dats = OrderedDict()
+        dats["pat"] = get_sim(config[study], "pressure:BC_AT:RC")
+        dats["pven"] = get_sim(config[study], "pressure:RC:BC_LV")
+        dats["vmyo"] = get_sim_out(config[study])
+        labels = ["AT Pressure [mmHg]", "LV Pressure [mmHg]", "Myocardial Volume [ml]"]
 
-    _, axs = plt.subplots(3, 1, figsize=(12, 9))
+        ti = config[study]["boundary_conditions"][0]["bc_values"]["t"]
+        datm = data[study]["smoothed"]
 
-    i = 0
-    axs[i].plot(ti, pat_sim*Ba_to_mmHg, "r-", label="simulated")
-    axs[i].plot(ti, pat*Ba_to_mmHg, "k--", label="measured (smoothed)")
-    axs[i].legend()
-    axs[i].set_xlabel("Time [s]")
-    axs[i].set_ylabel("AT Pressure [mmHg]")
+        convert = {"p": Ba_to_mmHg, "v": 1.0}
 
-    i = 1
-    axs[i].plot(ti, plv_sim*Ba_to_mmHg, "r-", label="simulated")
-    axs[i].plot(ti, plv*Ba_to_mmHg, "k--", label="measured (smoothed)")
-    axs[i].legend()
-    axs[i].set_xlabel("Time [s]")
-    axs[i].set_ylabel("LV Pressure [mmHg]")
-
-    i = 2
-    axs[i].plot(ti, q_sim, "r-", label="simulated")
-    axs[i].plot(ti, qlads, "k--", label="measured (smoothed)")
-    axs[i].legend()
-    axs[i].set_xlabel("Time [s]")
-    axs[i].set_ylabel("Myocardial Volume [ml]")
+        for i, k in enumerate(dats.keys()):
+            axs[i, j].plot(ti, dats[k] * convert[k[0]], "r-", label="simulated")
+            axs[i, j].plot(ti, datm[k] * convert[k[0]], "k--", label="measured (smoothed)")
+            axs[i, j].set_xlim(ti[0], ti[-1])
+            axs[i, j].grid(True)
+            if i == 0:
+                axs[i, j].set_title(study)
+            if i == len(dats) - 1:
+                axs[i, j].legend()
+                axs[i, j].set_xlabel("Time [s]")
+            if j == 0:
+                axs[i, j].set_ylabel(labels[i])
 
     plt.tight_layout()
-    if save:
-        plt.savefig(name + "_" + fname + ".pdf")
-        plt.close()
-    else:
-        plt.show()
+    plt.savefig(f'{animal}_simulated.pdf')
+    plt.close()
+
+def plot_all_optimized(animal, studies, optimized):
+    _, axes = plt.subplots(2, 1, figsize=(15, 10))
+    axes = axes.flatten()
+    
+    for i, param_val in enumerate(optimized[studies[0]].keys()):
+        if param_val.endswith("R"):
+            values = [optimized[s][param_val] * Ba_to_mmHg for s in studies]
+            ylabel = 'Resistance [mmHg*s/ml]'
+        elif param_val.endswith("C"):
+            values = [optimized[s][param_val] / Ba_to_mmHg for s in studies]
+            ylabel = 'Capacitance [ml/mmHg]'
+        elif param_val.endswith("L"):
+            values = [optimized[s][param_val] for s in studies]
+            ylabel = 'Inductance [cgs]'
+            
+        axes[i].bar(range(len(studies)), values)
+        axes[i].set_xticks(range(len(studies)))
+        axes[i].set_xticklabels(studies, rotation=45)
+        axes[i].set_ylabel(ylabel)
+        axes[i].set_title(f'{animal} {param_val}')
+
+    plt.tight_layout()
+    plt.savefig(f'{animal}_parameters.pdf')
+    plt.close()
 
 
-def optimize_zero_d(config, p0, ti, pats, qref, verbose=0):
+def optimize_zero_d(config, p0, qref, verbose=0):
     def cost_function(p):
         pset = set_params(config, p0, p)
         if verbose:
             for val in pset:
                 print(f"{val:.1e}", end="\t")
-            if verbose > 1:
-                plot_results("iter", config, ti, pats, qref, save=False)
         tmin = qref.argmin()
         qmin = qref[tmin] - get_sim_out(config)[tmin]
         qend = qref[-1] - get_sim_out(config)[-1]
         obj = [qmin, qend]
-        # obj = qref - get_sim_out(config)
+        obj = qref - get_sim_out(config)
         if verbose:
             print(f"{np.linalg.norm(obj):.1e}", end="\n")
         return obj
@@ -294,6 +315,7 @@ def estimate(animal, study, verb=0):
     pvens, _ = smooth(t, ti, pven, cutoff=15)
     qlads, _ = smooth(t, ti, qlad, cutoff=15)
     vmyos, qmyos = smooth(t, ti, vmyo, cutoff=15)
+    vmyos -= vmyos[0]
     vlads = cumulative_trapezoid(qlads, ti, initial=0)
     tv = [0.0, ti[-1]]
     pv = [0.0, 0.0]
@@ -318,7 +340,7 @@ def estimate(animal, study, verb=0):
         "qlad": qlads,
         "vlad": vlads,
     }
-    plot_data(name, data)
+    # plot_data(name, data)
 
     # read literature data
     lit_path = os.path.join("data", "kim10b_table3.json")
@@ -336,45 +358,20 @@ def estimate(animal, study, verb=0):
     pini[("BC_LV", "P")] = (pvens.tolist(), None, None)
     set_params(config, pini)
 
-    # set initial parameter guess from kim10b
-    lit_data = read_lit_data("kim10b_table3.json")
-    lit_vessel = lit_data["a"]
-    status = "R" # rest
-    bounds = {"R": (1e3, 1e5), "C": (1e-12, 1e-4), "L": (1e-12, 1e12)}
-    param = ["RL", "L", "RC", "C"]
-
-    # for p in param:
-    #     for vessel in config["vessels"]:
-    #         if vessel["vessel_name"] == p:
-    #             # pini[(p, p[0])] = (lit_vessel[p][status], *bounds[p[0]])
-    #             pini[(p, p[0])] = (bounds[p[0]][1], *bounds[p[0]])
-    
-    # pdb.set_trace()
-    pini[("RC", "C")] = (1e-5, *bounds["C"])
-    pini[("RC", "R")] = (1e+5, *bounds["R"])
-    # pini[("Rin", "R")] = (1e+5, *bounds["R"])
-    set_params(config, pini)
-    
+    # set initial values
+    bounds = {"R": (1e3, 1e12), "C": (1e-12, 1e-3), "L": (1e-12, 1e12)}
     p0 = OrderedDict()
-    optimize = [
-        ("RC", "C"),
-        ("RC", "R"),
-        # ("Rin", "R"),
-        ]
-    for o in optimize:
-        p0[o] = pini[o]
+    p0[("RC", "C")] = (1e-5, *bounds["C"])
+    p0[("RC", "R")] = (1e+4, *bounds["R"])
+    # p0[("RL", "L")] = (1e-9, *bounds["L"])
+    # p0[("RL", "R")] = (1e+5, *bounds["R"])
     set_params(config, p0)
 
-    vmyos -= vmyos[0]
-    # plot_results(name, config, ti, pats, pvens, vmyos, "literature")
-
-    config_opt = optimize_zero_d(config, p0, ti, pats, vmyos, verbose=verb)
-    plot_results(name, config_opt, ti, pats, pvens, vmyos, "simulated")
+    config_opt = optimize_zero_d(config, p0, vmyos, verbose=verb)
     print(name)
     print_params(config_opt, p0)
 
-    res_opt = config_opt["vessels"][0]["zero_d_element_values"]
-    return res_opt["R"], res_opt["C"]
+    return data, config_opt, p0
 
 
 def main():
@@ -387,33 +384,23 @@ def main():
         "mod_sten_dob",
     ]
     optimized = defaultdict(dict)
+    data = {}
+    config = {}
+
+    _, axes = plt.subplots(3, len(studies), figsize=(15, 10))
     for study in studies:
-        res, cap = estimate(animal, study, verb=0)
-        optimized[study]["R"] = res
-        optimized[study]["C"] = cap
-
-    # Create subplot for R and C
-    _, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        data[study], config[study], p0 = estimate(animal, study, verb=1)
+        params = [opt[0] for opt in p0]
+        values = [opt[1] for opt in p0]
+        for param in params:
+            for val in values:
+                for vessel in config[study]["vessels"]:
+                    if vessel["vessel_name"] == param:
+                        if val in vessel[str_val]:
+                            optimized[study][f"{param}_{val}"] = vessel[str_val][val]
     
-    # Plot resistances
-    resistances = [optimized[s]["R"] * Ba_to_mmHg for s in studies]
-    ax1.bar(range(len(studies)), resistances)
-    ax1.set_xticks(range(len(studies)))
-    ax1.set_xticklabels(studies, rotation=45)
-    ax1.set_ylabel('Resistance [mmHg*s/ml]')
-    ax1.set_title(animal + ' Optimized Resistances')
-
-    # Plot capacitances 
-    capacitances = [optimized[s]["C"] / Ba_to_mmHg for s in studies]
-    ax2.bar(range(len(studies)), capacitances)
-    ax2.set_xticks(range(len(studies)))
-    ax2.set_xticklabels(studies, rotation=45) 
-    ax2.set_ylabel('Capacitance [ml/mmHg]')
-    ax2.set_title(animal + ' Optimized Capacitances')
-
-    plt.tight_layout()
-    plt.savefig(f'{animal}_RC_parameters.pdf')
-    plt.close()
+    plot_results(animal, config, data)
+    plot_all_optimized(animal, studies, optimized)
 
 if __name__ == "__main__":
     main()
