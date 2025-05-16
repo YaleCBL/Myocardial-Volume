@@ -30,30 +30,32 @@ n_in = "BC_AT:Rin"
 n_out = "Rout:BC_LV"
 model = "two_parallel_serialRC"
 
-def read_data(animal, study, data):
+def read_data(animal, study):
+    data = {}
     csv_file = os.path.join("data", animal + "_" + study + ".csv")
     df = pd.read_csv(csv_file)
-    data["o"]["t"] = df["t abs [s]"].to_numpy()
+    data["t"] = df["t abs [s]"].to_numpy()
 
     # convert pressure to cgs units
     for field in df.keys():
         if "mmHg" in field:
             df[field.replace("mmHg", "Ba")] = df[field] * mmHg_to_Ba
 
-    data["o"]["pat"] = df["AoP [Ba]"].to_numpy()
-    data["o"]["pven"] = df["LVP [Ba]"].to_numpy()
-    data["o"]["vmyo"] = df["tissue vol ischemic [ml]"].to_numpy()
-    data["o"]["qlad"] = df["LAD Flow [mL/s]"].to_numpy()
+    data["pat"] = df["AoP [Ba]"].to_numpy()
+    data["pven"] = df["LVP [Ba]"].to_numpy()
+    data["vmyo"] = df["tissue vol ischemic [ml]"].to_numpy()
+    data["qlad"] = df["LAD Flow [mL/s]"].to_numpy()
 
-    data["o"]["qmyo"] = np.gradient(data["o"]["vmyo"], data["o"]["t"])
-    data["o"]["vlad"] = cumulative_trapezoid(data["o"]["qlad"], data["o"]["t"], initial=0)
+    data["qmyo"] = np.gradient(data["vmyo"], data["t"])
+    data["vlad"] = cumulative_trapezoid(data["qlad"], data["t"], initial=0)
 
     csv_file = os.path.join("data", animal + "_microsphere.csv")
     df = pd.read_csv(csv_file)
     for k in df.keys():
         if study in k:
-            data["o"]["dvcycle"] = df[k][0]
+            data["dvcycle"] = df[k][0]
             break
+    return data
 
 
 def read_lit_data(fname):
@@ -168,13 +170,15 @@ def smooth(t, ti, qt, cutoff=10):
     return np.interp(ti, t, qs), np.interp(ti, t, dqs)
 
 
-def smooth_data(data, nt):
-    data["s"]["t"] = np.linspace(data["o"]["t"][0], data["o"]["t"][-1], nt)
+def smooth_data(data_o, nt):
+    data_s = {}
+    data_s["t"] = np.linspace(data_o["t"][0], data_o["t"][-1], nt)
     for field in ["pat", "pven", "qlad"]:
-        data["s"][field], _ = smooth(data["o"]["t"], data["s"]["t"], data["o"][field], cutoff=15)
-    data["s"]["vmyo"], data["s"]["qmyo"] = smooth(data["o"]["t"], data["s"]["t"], data["o"]["vmyo"], cutoff=15)
-    data["s"]["vmyo"] -= data["s"]["vmyo"][0]
-    data["s"]["vlad"] = cumulative_trapezoid(data["s"]["qlad"], data["s"]["t"], initial=0)
+        data_s[field], _ = smooth(data_o["t"], data_s["t"], data_o[field], cutoff=15)
+    data_s["vmyo"], data_s["qmyo"] = smooth(data_o["t"], data_s["t"], data_o["vmyo"], cutoff=15)
+    data_s["vmyo"] -= data_s["vmyo"][0]
+    data_s["vlad"] = cumulative_trapezoid(data_s["qlad"], data_s["t"], initial=0)
+    return data_s
 
 
 def plot_data(animal, data):
@@ -320,17 +324,16 @@ def estimate(animal, study, verb=0):
     print(name)
 
     # read measurements
-    data = {"o": {}, "s": {}}
-    read_data(animal, study, data)
+    data_o = read_data(animal, study)
 
     # scale the LAD inflow according to microsphere measurements
-    dvlad = data["o"]["vlad"].max() - data["o"]["vlad"].min()
-    dvmyo = data["o"]["vmyo"].max() - data["o"]["vmyo"].min()
-    data["o"]["qlad"] *= data["o"]["dvcycle"] / dvlad
-    data["o"]["vlad"] *= data["o"]["dvcycle"] / dvlad
+    dvlad = data_o["vlad"].max() - data_o["vlad"].min()
+    dvmyo = data_o["vmyo"].max() - data_o["vmyo"].min()
+    data_o["qlad"] *= data_o["dvcycle"] / dvlad
+    data_o["vlad"] *= data_o["dvcycle"] / dvlad
 
     # interoplate to simulation time points and smooth flow rate
-    smooth_data(data, 201)
+    data_s = smooth_data(data_o, 201)
 
     # read literature data
     lit_path = os.path.join("data", "kim10b_table3.json")
@@ -338,14 +341,14 @@ def estimate(animal, study, verb=0):
 
     # create 0D model
     config = read_config(f"{model}.json")
-    config[str_param][str_time] = len(data["s"]["t"])
+    config[str_param][str_time] = len(data_s["t"])
 
     # set boundary conditions
     pini = {}
-    pini[("BC_AT", "t")] = (data["s"]["t"].tolist(), None, None)
-    pini[("BC_AT", "P")] = (data["s"]["pat"].tolist(), None, None)
-    pini[("BC_LV", "t")] = (data["s"]["t"].tolist(), None, None)
-    pini[("BC_LV", "P")] = (data["s"]["pven"].tolist(), None, None)
+    pini[("BC_AT", "t")] = (data_s["t"].tolist(), None, None)
+    pini[("BC_AT", "P")] = (data_s["pat"].tolist(), None, None)
+    pini[("BC_LV", "t")] = (data_s["t"].tolist(), None, None)
+    pini[("BC_LV", "P")] = (data_s["pven"].tolist(), None, None)
     set_params(config, pini)
 
     # set initial values
@@ -357,6 +360,7 @@ def estimate(animal, study, verb=0):
     # p0[("RC2", "C")] = (1e-5, *bounds["C"])
     set_params(config, p0)
 
+    data = {"o": data_o, "s": data_s}
     config_opt = optimize_zero_d(config, p0, data, verbose=verb)
     # print_params(config_opt, p0)
 
@@ -387,7 +391,7 @@ def main():
                         if val in vessel[str_val]:
                             optimized[study][f"{param}_{val}"] = vessel[str_val][val]
     
-    plot_data(animal, data)
+    # plot_data(animal, data)
     plot_results(animal, config, data)
     plot_optimized(animal, studies, optimized)
 
