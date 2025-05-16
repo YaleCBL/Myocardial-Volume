@@ -305,8 +305,10 @@ def optimize_zero_d(config, p0, data, verbose=0):
                 print(f"{val:.1e}", end="\t")
         vol = get_sim(config, "volume_im:BC_COR")
         vol -= vol[0]
-        obj = pref - get_sim_p(config)
-        # obj = np.concatenate([pref - get_sim_p(config), vref - vol])
+        # obj = pref - get_sim_p(config)
+        obj_p = (pref - get_sim_p(config)) / np.mean(pref)
+        obj_v = (vref - vol) / np.mean(vref)
+        obj = np.concatenate((obj_p, obj_v))
         if verbose:
             print(f"{np.linalg.norm(obj):.1e}", end="\n")
         return obj
