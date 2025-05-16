@@ -26,9 +26,9 @@ str_time = "number_of_time_pts_per_cardiac_cycle"
 mmHg_to_Ba = 133.322
 Ba_to_mmHg = 1 / mmHg_to_Ba
 
-n_in = "BC_AT:Rin"
-n_out = "Rout:BC_LV"
-model = "two_parallel_serialRC"
+n_in = "BC_AT:BV"
+n_out = "BV:BC_COR"
+model = "coronary"
 
 def read_data(animal, study):
     data = {}
@@ -238,7 +238,9 @@ def plot_results(animal, config, data):
         dats = OrderedDict()
         dats["pat"] = get_sim(config[study], "pressure:" + n_in)
         dats["pven"] = get_sim(config[study], "pressure:" + n_out)
-        dats["vmyo"] = get_sim_out(config[study])
+        vol = get_sim(config[study], "volume_im:BC_COR")
+        vol -= vol[0]
+        dats["vmyo"] = vol
         labels = ["AT Pressure [mmHg]", "LV Pressure [mmHg]", "Myocardial Volume [ml]"]
 
         ti = config[study]["boundary_conditions"][0]["bc_values"]["t"]
@@ -294,17 +296,17 @@ def plot_optimized(animal, studies, optimized):
 
 
 def optimize_zero_d(config, p0, data, verbose=0):
-    qref = data["s"]["vmyo"]
+    pref = data["s"]["pat"]
+    vref = data["s"]["vmyo"]
     def cost_function(p):
         pset = set_params(config, p0, p)
         if verbose:
             for val in pset:
                 print(f"{val:.1e}", end="\t")
-        tmin = qref.argmin()
-        qmin = qref[tmin] - get_sim_out(config)[tmin]
-        qend = qref[-1] - get_sim_out(config)[-1]
-        # obj = [qmin, qend]
-        obj = qref - get_sim_out(config)
+        vol = get_sim(config, "volume_im:BC_COR")
+        vol -= vol[0]
+        obj = pref - get_sim_p(config)
+        # obj = np.concatenate([pref - get_sim_p(config), vref - vol])
         if verbose:
             print(f"{np.linalg.norm(obj):.1e}", end="\n")
         return obj
@@ -346,18 +348,19 @@ def estimate(animal, study, verb=0):
     # set boundary conditions
     pini = {}
     pini[("BC_AT", "t")] = (data_s["t"].tolist(), None, None)
-    pini[("BC_AT", "P")] = (data_s["pat"].tolist(), None, None)
-    pini[("BC_LV", "t")] = (data_s["t"].tolist(), None, None)
-    pini[("BC_LV", "P")] = (data_s["pven"].tolist(), None, None)
+    pini[("BC_AT", "Q")] = (data_s["qlad"].tolist(), None, None)
+    pini[("BC_COR", "t")] = (data_s["t"].tolist(), None, None)
+    pini[("BC_COR", "Pim")] = (data_s["pven"].tolist(), None, None)
     set_params(config, pini)
 
     # set initial values
     bounds = {"R": (1e3, 1e6), "C": (1e-12, 1e-3), "L": (1e-12, 1e12)}
     p0 = OrderedDict()
-    p0[("RC1", "R")] = (1e+4, *bounds["R"])
-    p0[("RC1", "C")] = (1e-5, *bounds["C"])
-    # p0[("RC2", "R")] = (1e+4, *bounds["R"])
-    # p0[("RC2", "C")] = (1e-5, *bounds["C"])
+    p0[("BC_COR", "Ra1")] = (1e+4, *bounds["R"])
+    p0[("BC_COR", "Ra2")] = (1e+4, *bounds["R"])
+    p0[("BC_COR", "Rv1")] = (1e+4, *bounds["R"])
+    p0[("BC_COR", "Ca")] = (1e-5, *bounds["C"])
+    p0[("BC_COR", "Cc")] = (1e-5, *bounds["C"])
     set_params(config, p0)
 
     data = {"o": data_o, "s": data_s}
