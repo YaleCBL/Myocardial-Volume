@@ -265,7 +265,8 @@ def plot_results(animal, config, data):
     plt.savefig(f'{animal}_{model}_simulated.pdf')
     plt.close()
 
-def plot_optimized(animal, studies, optimized):
+def plot_optimized(animal, optimized):
+    studies = list(optimized.keys())
     n_param = len(optimized[studies[0]].keys())
     _, axes = plt.subplots(1, n_param, figsize=(n_param*5, 10))
     if n_param == 1:
@@ -273,22 +274,25 @@ def plot_optimized(animal, studies, optimized):
     else:
         axes = axes.flatten()
     
-    for i, param_val in enumerate(optimized[studies[0]].keys()):
-        if param_val[0] == "R":
-            values = [optimized[s][param_val] * Ba_to_mmHg for s in studies]
-            ylabel = 'Resistance [mmHg*s/ml]'
-        elif param_val[0] == "C":
-            values = [optimized[s][param_val] / Ba_to_mmHg for s in studies]
+    for i, (param, val) in enumerate(optimized[studies[0]].keys()):
+        zerod = val[0]
+        if zerod == "R":
+            values = [optimized[s][(param, val)] * Ba_to_mmHg * 1000 / 60  for s in studies]
+            ylabel = 'Resistance [mmHg*min/l]'
+        elif zerod == "C":
+            values = [optimized[s][(param, val)] / Ba_to_mmHg for s in studies]
             ylabel = 'Capacitance [ml/mmHg]'
-        elif param_val[0] == "L":
-            values = [optimized[s][param_val] for s in studies]
+        elif zerod == "L":
+            values = [optimized[s][(param, val)] for s in studies]
             ylabel = 'Inductance [cgs]'
+        else:
+            raise ValueError(f"Unknown parameter {(param, val)}")
             
         axes[i].bar(range(len(studies)), values)
         axes[i].set_xticks(range(len(studies)))
         axes[i].set_xticklabels(studies, rotation=45)
         axes[i].set_ylabel(ylabel)
-        axes[i].set_title(f'{animal} {param_val}')
+        axes[i].set_title(f'{animal} {param} {val}')
 
     plt.tight_layout()
     plt.savefig(f'{animal}_{model}_parameters.pdf')
@@ -394,11 +398,15 @@ def main():
                 for vessel in config[study]["vessels"]:
                     if vessel["vessel_name"] == param:
                         if val in vessel[str_val]:
-                            optimized[study][f"{param}_{val}"] = vessel[str_val][val]
+                            optimized[study][(param, val)] = vessel[str_val][val]
+                for bc in config[study][str_bc]:
+                    if bc["bc_name"] == param:
+                        if val in bc["bc_values"]:
+                            optimized[study][(param, val)] = bc["bc_values"][val]
     
     # plot_data(animal, data)
     plot_results(animal, config, data)
-    plot_optimized(animal, studies, optimized)
+    plot_optimized(animal, optimized)
 
 if __name__ == "__main__":
     main()
