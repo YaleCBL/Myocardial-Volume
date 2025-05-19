@@ -87,15 +87,13 @@ def get_sim_p(config):
     return get_sim(config, "pressure:" + n_in)
 
 
-def get_sim_out(config):
-    q_sim_in = get_sim(config, "flow:" + n_in)
-    q_sim_out = get_sim(config, "flow:" + n_out)
+def get_sim_v(config):
+    q_sim = get_sim(config, "flow:" + n_in)
     nt = config[str_param][str_time]
     tmax = config['boundary_conditions'][0]['bc_values']['t'][-1]
     ti = np.linspace(0.0, tmax, nt)
-    q_diff = q_sim_out - q_sim_in
-    # vol = cumulative_trapezoid(q_diff, ti, initial=0)
-    vol = cumulative_trapezoid(q_sim_in, ti, initial=0)
+    vol = cumulative_trapezoid(q_sim, ti, initial=0)
+    vol -= vol[0]
     return vol
 
 
@@ -238,9 +236,7 @@ def plot_results(animal, config, data):
         dats = OrderedDict()
         dats["pat"] = get_sim(config[study], "pressure:" + n_in)
         dats["pven"] = get_sim(config[study], "pressure:" + n_out)
-        vol = get_sim(config[study], "volume_im:BC_COR")
-        vol -= vol[0]
-        dats["vmyo"] = vol
+        dats["vmyo"] = get_sim_v(config[study])
         labels = ["AT Pressure [mmHg]", "LV Pressure [mmHg]", "Myocardial Volume [ml]"]
 
         ti = config[study]["boundary_conditions"][0]["bc_values"]["t"]
@@ -307,11 +303,8 @@ def optimize_zero_d(config, p0, data, verbose=0):
         if verbose:
             for val in pset:
                 print(f"{val:.1e}", end="\t")
-        vol = get_sim(config, "volume_im:BC_COR")
-        vol -= vol[0]
-        # obj = pref - get_sim_p(config)
         obj_p = (pref - get_sim_p(config)) / np.mean(pref)
-        obj_v = (vref - vol) / np.mean(vref)
+        obj_v = (vref - get_sim_v(config)) / np.mean(vref)
         obj = np.concatenate((obj_p, obj_v))
         if verbose:
             print(f"{np.linalg.norm(obj):.1e}", end="\n")
