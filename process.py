@@ -88,13 +88,15 @@ def get_sim_p(config):
 
 
 def get_sim_v(config):
-    q_sim = get_sim(config, "flow:" + n_in)
-    nt = config[str_param][str_time]
-    tmax = config['boundary_conditions'][0]['bc_values']['t'][-1]
-    ti = np.linspace(0.0, tmax, nt)
-    vol = cumulative_trapezoid(q_sim, ti, initial=0)
-    vol -= vol[0]
-    return vol
+    if config['boundary_conditions'][1]['bc_type'] == "CORONARY":
+        v_sim = get_sim(config, "volume_im:BC_COR")
+    else:
+        q_sim = get_sim(config, "flow:" + n_in)
+        nt = config[str_param][str_time]
+        tmax = config['boundary_conditions'][0]['bc_values']['t'][-1]
+        ti = np.linspace(0.0, tmax, nt)
+        v_sim = cumulative_trapezoid(q_sim, ti, initial=0)
+    return v_sim - v_sim[0]
 
 
 def set_params(config, p, x=None):
@@ -183,10 +185,6 @@ def plot_data(animal, data):
     # pdb.set_trace()
     n_param = len(data.keys())
     _, ax = plt.subplots(4, n_param, figsize=(n_param*5, 10), sharex="col", sharey="row")
-    # if n_param == 1:
-    #     ax = [ax]
-    # else:
-    #     ax = ax.flatten()
     axt = np.array([[ax[i,j].twinx() for j in range(ax.shape[1])] for i in range(ax.shape[0])])
     mk = {"o": ".", "s": "-"}
 
@@ -226,23 +224,27 @@ def plot_data(animal, data):
 
 
 def plot_results(animal, config, data):
-    _, axs = plt.subplots(3, len(config), figsize=(16, 9), sharex="col", sharey="row")
+    labels = {"qlad": "LAD Flow (scaled) [ml/s]",
+                "pat": "Aterial Pressure [mmHg]",
+                "pven": "Left-Ventricular Pressure [mmHg]",
+                "vmyo": "Myocardial Volume [ml]"}
+    _, axs = plt.subplots(len(labels), len(config), figsize=(16, 9), sharex="col", sharey="row")
     if len(config) == 1:
         axs = axs.reshape(-1,1)
     for j, study in enumerate(config.keys()):
         with open(f'{animal}_{study}.json', "w") as f:
             json.dump(config[study], f, indent=2)
 
-        dats = OrderedDict()
-        dats["pat"] = get_sim(config[study], "pressure:" + n_in)
-        dats["pven"] = get_sim(config[study], "pressure:" + n_out)
-        dats["vmyo"] = get_sim_v(config[study])
-        labels = ["AT Pressure [mmHg]", "LV Pressure [mmHg]", "Myocardial Volume [ml]"]
-
         ti = config[study]["boundary_conditions"][0]["bc_values"]["t"]
         datm = data[study]["s"]
 
-        convert = {"p": Ba_to_mmHg, "v": 1.0}
+        dats = OrderedDict()
+        dats["qlad"] = get_sim(config[study], "flow:" + n_in)
+        dats["pven"] = datm["pven"]
+        dats["pat"] = get_sim(config[study], "pressure:" + n_in)
+        dats["vmyo"] = get_sim_v(config[study])
+
+        convert = {"p": Ba_to_mmHg, "v": 1.0, "q": 1.0}
 
         for i, k in enumerate(dats.keys()):
             axs[i, j].plot(ti, dats[k] * convert[k[0]], "r-", label="simulated")
@@ -255,13 +257,13 @@ def plot_results(animal, config, data):
                 axs[i, j].legend()
                 axs[i, j].set_xlabel("Time [s]")
             if j == 0:
-                axs[i, j].set_ylabel(labels[i])
+                axs[i, j].set_ylabel(labels[k])
 
     plt.tight_layout()
     plt.savefig(f'{animal}_{model}_simulated.pdf')
     plt.close()
 
-def plot_optimized(animal, optimized):
+def plot_parameters(animal, optimized):
     studies = list(optimized.keys())
     n_param = len(optimized[studies[0]].keys())
     _, axes = plt.subplots(1, n_param, figsize=(n_param*5, 10))
@@ -270,29 +272,56 @@ def plot_optimized(animal, optimized):
     else:
         axes = axes.flatten()
     
+    # Group parameters by zerod type
+    param_groups = defaultdict(list)
     for i, (param, val) in enumerate(optimized[studies[0]].keys()):
-        zerod = val[0]
-        if zerod == "R":
-            values = [optimized[s][(param, val)] * Ba_to_mmHg * 1000 / 60  for s in studies]
-            ylabel = 'Resistance [mmHg*min/l]'
-        elif zerod == "C":
-            values = [optimized[s][(param, val)] / Ba_to_mmHg for s in studies]
-            ylabel = 'Capacitance [ml/mmHg]'
-        elif zerod == "L":
-            values = [optimized[s][(param, val)] for s in studies]
-            ylabel = 'Inductance [cgs]'
-        else:
-            raise ValueError(f"Unknown parameter {(param, val)}")
+        param_groups[val[0]] += [(i, param, val)]
+
+    # Plot parameters sharing y axes within groups
+    for zerod, params in param_groups.items():
+        first_ax = None
+        for i, param, val in params:
+            values = np.array([optimized[s][(param, val)] for s in studies])
+            if zerod == "R":
+                # values *= Ba_to_mmHg * 1000 / 60
+                # ylabel = 'Resistance [mmHg*min/l]'
+                ylabel = 'Resistance [cgs]'
+            elif zerod == "C":
+                # values *= Ba_to_mmHg
+                # ylabel = 'Capacitance [ml/mmHg]'
+                ylabel = 'Capacitance [cgs]'
+            elif zerod == "L":
+                # values *= 1.0
+                ylabel = 'Inductance [cgs]'
+            elif zerod == "P":
+                values *= Ba_to_mmHg
+                ylabel = 'Pressure [mmHg]'
+            else:
+                raise ValueError(f"Unknown parameter {(param, val)}")
             
-        axes[i].bar(range(len(studies)), values)
-        axes[i].set_xticks(range(len(studies)))
-        axes[i].set_xticklabels(studies, rotation=45)
-        axes[i].set_ylabel(ylabel)
-        axes[i].set_title(f'{animal} {param} {val}')
+            if first_ax is None:
+                first_ax = axes[i]
+                axes[i].set_ylabel(ylabel)
+            else:
+                axes[i].sharey(first_ax)
+                axes[i].set_ylabel('')
+            
+            axes[i].grid(True, axis='y')
+            axes[i].bar(range(len(studies)), values)
+            axes[i].set_xticks(range(len(studies)))
+            axes[i].set_xticklabels(studies, rotation=45)
+            axes[i].set_title(f'{animal} {param} {val}')
 
     plt.tight_layout()
     plt.savefig(f'{animal}_{model}_parameters.pdf')
     plt.close()
+
+def get_objective(ref, sim, t=None):
+    if t is not None:
+        ref = ref[t]
+        sim = sim[t]
+    obj = (ref - sim) / np.mean(ref)
+    return obj
 
 
 def optimize_zero_d(config, p0, data, verbose=0):
@@ -303,8 +332,10 @@ def optimize_zero_d(config, p0, data, verbose=0):
         if verbose:
             for val in pset:
                 print(f"{val:.1e}", end="\t")
-        obj_p = (pref - get_sim_p(config)) / np.mean(pref)
-        obj_v = (vref - get_sim_v(config)) / np.mean(vref)
+        t_p = [0, np.argmax(pref), -1]
+        t_q = [0, np.argmin(vref), -1]
+        obj_p = get_objective(pref, get_sim_p(config))
+        obj_v = get_objective(vref, get_sim_v(config))
         obj = np.concatenate((obj_p, obj_v))
         if verbose:
             print(f"{np.linalg.norm(obj):.1e}", end="\n")
@@ -313,7 +344,7 @@ def optimize_zero_d(config, p0, data, verbose=0):
     initial = get_params(p0)
     if verbose:
         for k in p0.keys():
-            print(f"{k[0][:5]} {k[1][0]}", end="\t")
+            print(f"{k[1]}", end="\t")
         print("obj", end="\n")
     res = least_squares(cost_function, initial, jac="2-point")#, method="lm", diff_step=1e-3
     set_params(config, p0, res.x)
@@ -330,8 +361,19 @@ def estimate(animal, study, verb=0):
     # scale the LAD inflow according to microsphere measurements
     dvlad = data_o["vlad"].max() - data_o["vlad"].min()
     dvmyo = data_o["vmyo"].max() - data_o["vmyo"].min()
-    data_o["qlad"] *= data_o["dvcycle"] / dvlad
-    data_o["vlad"] *= data_o["dvcycle"] / dvlad
+
+    # scale so all LAD inflow goes entirely to the myocardium
+    scale_vol = dvmyo / dvlad
+    
+    # average microsphere scaling
+    scale_sphere = {"baseline": 0.116, 
+                    "mild_sten": 0.106,
+                    "mild_sten_dob": 0.145,
+                    "mod_sten": 0.105,
+                    "mod_sten_dob": 0.088}
+
+    data_o["qlad"] *= scale_vol * scale_sphere[study]
+    data_o["vlad"] *= scale_vol * scale_sphere[study]
 
     # interoplate to simulation time points and smooth flow rate
     data_s = smooth_data(data_o, 201)
@@ -353,13 +395,14 @@ def estimate(animal, study, verb=0):
     set_params(config, pini)
 
     # set initial values
-    bounds = {"R": (1e3, 1e6), "C": (1e-12, 1e-3), "L": (1e-12, 1e12)}
+    bounds = {"R": (1e2, 1e9), "C": (1e-9, 1e-3), "L": (1e-12, 1e12), "P": (1e-3, 1e9)}
     p0 = OrderedDict()
     p0[("BC_COR", "Ra1")] = (1e+4, *bounds["R"])
     p0[("BC_COR", "Ra2")] = (1e+4, *bounds["R"])
     p0[("BC_COR", "Rv1")] = (1e+4, *bounds["R"])
     p0[("BC_COR", "Ca")] = (1e-5, *bounds["C"])
     p0[("BC_COR", "Cc")] = (1e-5, *bounds["C"])
+    # p0[("BC_COR", "P_v")] = (1e3, *bounds["P"])
     set_params(config, p0)
 
     data = {"o": data_o, "s": data_s}
@@ -399,7 +442,7 @@ def main():
     
     # plot_data(animal, data)
     plot_results(animal, config, data)
-    plot_optimized(animal, optimized)
+    plot_parameters(animal, optimized)
 
 if __name__ == "__main__":
     main()
