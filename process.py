@@ -23,6 +23,8 @@ str_bc = "boundary_conditions"
 str_param = "simulation_parameters"
 str_time = "number_of_time_pts_per_cardiac_cycle"
 
+unit_choices = ["cgs", "mmHg", "paper"]
+units = unit_choices[2]
 mmHg_to_Ba = 133.322
 Ba_to_mmHg = 1 / mmHg_to_Ba
 
@@ -44,17 +46,26 @@ def read_data(animal, study):
     data["pat"] = df["AoP [Ba]"].to_numpy()
     data["pven"] = df["LVP [Ba]"].to_numpy()
     data["vmyo"] = df["tissue vol ischemic [ml]"].to_numpy()
-    data["qlad"] = df["LAD Flow [mL/s]"].to_numpy()
+    data["qlad"] = df["LAD Flow [ml/min]"].to_numpy()
 
+    data["qlad"] /= 60.0 # convert from ml/min to ml/s
     data["qmyo"] = np.gradient(data["vmyo"], data["t"])
     data["vlad"] = cumulative_trapezoid(data["qlad"], data["t"], initial=0)
 
     csv_file = os.path.join("data", animal + "_microsphere.csv")
     df = pd.read_csv(csv_file)
-    for k in df.keys():
-        if study in k:
-            data["dvcycle"] = df[k][0]
-            break
+    data["dvcycle"] = df[f"{study} ischemic flow [ml/min/g]"].to_numpy()
+    data["dvcycle"] /= 60.0  # convert from ml/min/g to ml/s/g
+    data["dvcycle"] *= data["t"][-1] # convert from ml/s/g to ml/cycle/g
+
+    # scale the LAD inflow according to microsphere measurements
+    dvlad = data["vlad"].max() - data["vlad"].min()
+    dvmyo = data["vmyo"].max() - data["vmyo"].min()
+
+    # scale so all LAD inflow goes entirely to the myocardium
+    scale_vol = data["dvcycle"] / dvlad
+    data["qlad"] *= scale_vol
+    data["vlad"] *= scale_vol
     return data
 
 
@@ -134,6 +145,44 @@ def get_params(p):
         out += [np.log((pval - pmin) / (pmax - pmin))]
     return out
 
+def convert_units(k, val, units):
+    if k == "R":
+        name = "Resistance"
+    elif k == "C":
+        name = "Capacitance"
+    elif k == "P":
+        name = "Pressure"
+    elif k == "L":
+        name = "Inductance"
+    else:
+        raise ValueError(f"Unknown name {k}")
+    
+    if units == "cgs":
+        unit = "cgs"
+    elif units == "mmHg":
+        if k == "R":
+            valu = val * Ba_to_mmHg
+            unit = "mmHg*s/ml"
+        elif k == "C":
+            valu = val * 1 / Ba_to_mmHg
+            unit = "ml/mmHg"
+        elif k == "P":
+            valu = val * Ba_to_mmHg
+            unit = "mmHg"
+    elif units == "paper":
+        if k == "R":
+            valu = val * 1e-3
+            unit = "10^3 dynes*s/cm^5"
+        elif k == "C":
+            valu = val * 1e6
+            unit = "10^-6 cm^5/dynes"
+        elif k == "P":
+            valu = val * Ba_to_mmHg
+            unit = "mmHg"
+    else:
+        raise ValueError(f"Unknown units {units}")
+
+    return valu, unit, name
 
 def print_params(config, param):
     str = ""
@@ -147,14 +196,7 @@ def print_params(config, param):
                 if vs["vessel_name"] == id:
                     val = vs[str_val][k]
         # convert units
-        if k == "R":
-            val *= Ba_to_mmHg
-            unit = "mmHg*s/ml"
-        elif k == "C":
-            val *= 1 / Ba_to_mmHg
-            unit = "ml/mmHg"
-        else:
-            unit = "cgs"
+        val, unit, _ = convert_units(k[0], val, units)
         str += id + " " + k[0] + f" {val:.1e} " + unit + "\n"
     print(str)
 
@@ -265,13 +307,21 @@ def plot_results(animal, config, data):
 
 def plot_parameters(animal, optimized):
     studies = list(optimized.keys())
+        
+    # add Ra sum
+    # for s in studies:
+    #     total = ('BC_COR', 'Rx=Ra1+Ra2+Rv')
+    #     optimized[s][total] = 0
+    #     for res in ['Ra1', 'Ra2', 'Rv1']:
+    #         optimized[s][total] += optimized[s][('BC_COR', res)]
+
     n_param = len(optimized[studies[0]].keys())
-    _, axes = plt.subplots(1, n_param, figsize=(n_param*5, 10))
+    _, axes = plt.subplots(1, n_param, figsize=(n_param*3, 6))
     if n_param == 1:
         axes = [axes]
     else:
         axes = axes.flatten()
-    
+
     # Group parameters by zerod type
     param_groups = defaultdict(list)
     for i, (param, val) in enumerate(optimized[studies[0]].keys()):
@@ -282,22 +332,9 @@ def plot_parameters(animal, optimized):
         first_ax = None
         for i, param, val in params:
             values = np.array([optimized[s][(param, val)] for s in studies])
-            if zerod == "R":
-                # values *= Ba_to_mmHg * 1000 / 60
-                # ylabel = 'Resistance [mmHg*min/l]'
-                ylabel = 'Resistance [cgs]'
-            elif zerod == "C":
-                # values *= Ba_to_mmHg
-                # ylabel = 'Capacitance [ml/mmHg]'
-                ylabel = 'Capacitance [cgs]'
-            elif zerod == "L":
-                # values *= 1.0
-                ylabel = 'Inductance [cgs]'
-            elif zerod == "P":
-                values *= Ba_to_mmHg
-                ylabel = 'Pressure [mmHg]'
-            else:
-                raise ValueError(f"Unknown parameter {(param, val)}")
+            values, unit, name = convert_units(zerod, values, units)
+            ylabel = f'{name} [{unit}]'
+            print(f'{param} {zerod} {values.min():.1e} - {values.max():.1e} [{unit}]')
             
             if first_ax is None:
                 first_ax = axes[i]
@@ -310,7 +347,8 @@ def plot_parameters(animal, optimized):
             axes[i].bar(range(len(studies)), values)
             axes[i].set_xticks(range(len(studies)))
             axes[i].set_xticklabels(studies, rotation=45)
-            axes[i].set_title(f'{animal} {param} {val}')
+            axes[i].set_title(f'{animal} {val}')
+            axes[i].tick_params(axis='both', which='major')
 
     plt.tight_layout()
     plt.savefig(f'{animal}_{model}_parameters.pdf')
@@ -358,23 +396,6 @@ def estimate(animal, study, verb=0):
     # read measurements
     data_o = read_data(animal, study)
 
-    # scale the LAD inflow according to microsphere measurements
-    dvlad = data_o["vlad"].max() - data_o["vlad"].min()
-    dvmyo = data_o["vmyo"].max() - data_o["vmyo"].min()
-
-    # scale so all LAD inflow goes entirely to the myocardium
-    scale_vol = dvmyo / dvlad
-    
-    # average microsphere scaling
-    scale_sphere = {"baseline": 0.116, 
-                    "mild_sten": 0.106,
-                    "mild_sten_dob": 0.145,
-                    "mod_sten": 0.105,
-                    "mod_sten_dob": 0.088}
-
-    data_o["qlad"] *= scale_vol * scale_sphere[study]
-    data_o["vlad"] *= scale_vol * scale_sphere[study]
-
     # interoplate to simulation time points and smooth flow rate
     data_s = smooth_data(data_o, 201)
 
@@ -397,17 +418,17 @@ def estimate(animal, study, verb=0):
     # set initial values
     bounds = {"R": (1e2, 1e9), "C": (1e-9, 1e-3), "L": (1e-12, 1e12), "P": (1e-3, 1e9)}
     p0 = OrderedDict()
-    p0[("BC_COR", "Ra1")] = (1e+4, *bounds["R"])
-    p0[("BC_COR", "Ra2")] = (1e+4, *bounds["R"])
-    p0[("BC_COR", "Rv1")] = (1e+4, *bounds["R"])
-    p0[("BC_COR", "Ca")] = (1e-5, *bounds["C"])
+    p0[("BC_COR", "Ra1")] = (1e+5, *bounds["R"])
+    p0[("BC_COR", "Ra2")] = (1e+5, *bounds["R"])
+    p0[("BC_COR", "Rv1")] = (1e+5, *bounds["R"])
+    p0[("BC_COR", "Ca")] = (1e-6, *bounds["C"])
     p0[("BC_COR", "Cc")] = (1e-5, *bounds["C"])
     # p0[("BC_COR", "P_v")] = (1e3, *bounds["P"])
     set_params(config, p0)
 
     data = {"o": data_o, "s": data_s}
     config_opt = optimize_zero_d(config, p0, data, verbose=verb)
-    # print_params(config_opt, p0)
+    print_params(config_opt, p0)
 
     return data, config_opt, p0
 
@@ -426,7 +447,7 @@ def main():
     config = {}
 
     for study in studies:
-        data[study], config[study], p0 = estimate(animal, study, verb=1)
+        data[study], config[study], p0 = estimate(animal, study, verb=0)
         params = [opt[0] for opt in p0]
         values = [opt[1] for opt in p0]
         for param in params:
