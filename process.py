@@ -25,7 +25,7 @@ str_time = "number_of_time_pts_per_cardiac_cycle"
 
 unit_choices = ["cgs", "mmHg", "paper"]
 units = unit_choices[2]
-mmHg_to_Ba = 133.322
+mmHg_to_Ba = 133.322 * 10
 Ba_to_mmHg = 1 / mmHg_to_Ba
 
 n_in = "BC_AT:BV"
