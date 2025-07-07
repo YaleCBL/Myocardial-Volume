@@ -118,18 +118,18 @@ def set_params(config, p, x=None):
     for i, (id, k) in enumerate(p.keys()):
         pval, pmin, pmax = p[(id, k)]
         
-        # if x is not empty then it is a fitting parameter? gathered after the least square optimization 
+        # if x is not empty then it is the optmized value gathered after the least square optimization 
         if x is not None:
             # sets xval to ith parameter in the p dictionary 
             xval = x[i]
             # rearranges the pval, pmin, pmax depending on the value of x 
-            # Don't really understand the logic here or what x even is 
+            # as the limits causes x to be too small or too large so manually overwrites the values 
             if xval > 100:
                 pval = pmax
             elif xval < -100:
                 pval = pmin
             else:
-                # Weird equation to get pval with e^x??
+                # Inverse of log function used for the bounds 
                 pval = pmin + (pmax - pmin) * 1 / (1 / np.exp(xval) + 1)
         # Sets the output to the pvals that were modified/added to config 
         out += [pval]
@@ -154,7 +154,7 @@ def set_params(config, p, x=None):
                     vs[str_val][k] = pval
     return out
 
-# Does this weird log thing to simulate bounds for the parameters bounds, as they get closer to the bounds they start changing less and less so the 
+# Simulate bounds for the parameters bounds using log function, as they get closer to the bounds they start changing less and less so the 
 # simulation avoids those values 
 def get_params(p):
     out = []
@@ -241,9 +241,7 @@ def smooth_data(data_o, nt):
         data_s[field], _ = smooth(data_o["t"], data_s["t"], data_o[field], cutoff=15)
     # smooths 'vmyo' and gets it's derivatives as 'qmyo'
     data_s["vmyo"], data_s["qmyo"] = smooth(data_o["t"], data_s["t"], data_o["vmyo"], cutoff=15)
-    # subtracts the first element from the array?? 
     data_s["vmyo"] -= data_s["vmyo"][0]
-    # takes integral of 'qlad'??? as 'vlad'
     data_s["vlad"] = cumulative_trapezoid(data_s["qlad"], data_s["t"], initial=0)
     # returns the dictionary 
     return data_s
@@ -385,7 +383,7 @@ def get_objective(ref, sim, t=None):
     if t is not None:
         ref = ref[t]
         sim = sim[t]
-    # objective function which I don't fully understand?? 
+    # objective function which normalizes the difference using the mean 
     obj = (ref - sim) / np.mean(ref)
     return obj
 
@@ -397,7 +395,6 @@ def optimize_zero_d(config, p0, data, verbose=0):
     # defines a cost function for the parameters 
     def cost_function(p):
         # sets parameters according to passed p array for the x in the set_params functions 
-        # still don't fully understand it lowkey
         pset = set_params(config, p0, p)
         # prints value that are set if verbose is 1 
         if verbose:
