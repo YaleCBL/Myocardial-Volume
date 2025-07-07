@@ -25,7 +25,7 @@ str_time = "number_of_time_pts_per_cardiac_cycle"
 
 unit_choices = ["cgs", "mmHg", "paper"]
 units = unit_choices[2]
-mmHg_to_Ba = 133.322
+mmHg_to_Ba = 133.322 * 10
 Ba_to_mmHg = 1 / mmHg_to_Ba
 
 n_in = "BC_AT:BV"
@@ -82,7 +82,7 @@ def read_lit_data(fname):
                     lit_data[k][kk][kkk] *= 1e-6
     return lit_data
 
-
+# Reads in json file with given name and returns the object containing all information in it 
 def read_config(fname):
     with open(fname, "r") as f:
         return json.load(f)
@@ -109,35 +109,53 @@ def get_sim_v(config):
         v_sim = cumulative_trapezoid(q_sim, ti, initial=0)
     return v_sim - v_sim[0]
 
-
+# Rewrites the passed config object to include whatever parameters are in p 
+# Either the boundary conditions for the time varying flow and pressures are inputted or the 
+# new values for the resistors and capacitors are inputted after they have been modified 
 def set_params(config, p, x=None):
     out = []
+    # Loops through all the parameters in the dict p 
     for i, (id, k) in enumerate(p.keys()):
         pval, pmin, pmax = p[(id, k)]
+        
+        # if x is not empty then it is the optmized value gathered after the least square optimization 
         if x is not None:
+            # sets xval to ith parameter in the p dictionary 
             xval = x[i]
+            # rearranges the pval, pmin, pmax depending on the value of x 
+            # as the limits causes x to be too small or too large so manually overwrites the values 
             if xval > 100:
                 pval = pmax
             elif xval < -100:
                 pval = pmin
             else:
+                # Inverse of log function used for the bounds 
                 pval = pmin + (pmax - pmin) * 1 / (1 / np.exp(xval) + 1)
+        # Sets the output to the pvals that were modified/added to config 
         out += [pval]
+
+        # sets the parameter specifically checks if they are boundary conditions or vessel parameters
         if "BC" in id:
+            # loops through all the boundary conditions 
             for bc in config[str_bc]:
+                # checks if any of them match the id in the parameters dictionary 
                 if bc["bc_name"] == id:
+                    # if the parameter is the P (pressure) then it makes it constant 
                     if k == "P" and isinstance(pval, float):
                         bc["bc_values"][k] = [pval, pval]
                         bc["bc_values"]["t"] = [0, 0.737]
+                    # if the parameter is anything else then it updates that parameter's value with whatever was passed as pval
                     else:
                         bc["bc_values"][k] = pval
         else:
+            # Similarly for the vessels just with different names 
             for vs in config["vessels"]:
                 if vs["vessel_name"] == id:
                     vs[str_val][k] = pval
     return out
 
-
+# Simulate bounds for the parameters bounds using log function, as they get closer to the bounds they start changing less and less so the 
+# simulation avoids those values 
 def get_params(p):
     out = []
     for k in p.keys():
@@ -200,7 +218,7 @@ def print_params(config, param):
         str += id + " " + k[0] + f" {val:.1e} " + unit + "\n"
     print(str)
 
-
+# smooths the data by doing a fourier transform to get rid of certain frequencies 
 def smooth(t, ti, qt, cutoff=10):
     N = len(qt)
     freqs = fftfreq(N, d=t[1] - t[0])
@@ -209,17 +227,23 @@ def smooth(t, ti, qt, cutoff=10):
     qs = np.real(ifft(q_fft))
     dqs_fft = q_fft * (2j * np.pi * freqs)
     dqs = np.real(ifft(dqs_fft))
+    # Linearly interpolates the results to upscale the data set and outputs both the data set and it's derivatives 
     return np.interp(ti, t, qs), np.interp(ti, t, dqs)
 
-
+# smooths the data and interpolates it to a specific size nt
 def smooth_data(data_o, nt):
+    # Creates a dictionary with all the smoothed data 
     data_s = {}
+    # Creates the time array of size nt with the high and low values of the time of the original data set 
     data_s["t"] = np.linspace(data_o["t"][0], data_o["t"][-1], nt)
+    # goes through the 3 data sets 'pat' 'pven' and 'qlad' and uses the smooth function to smooth it without gathering the derivatives 
     for field in ["pat", "pven", "qlad"]:
         data_s[field], _ = smooth(data_o["t"], data_s["t"], data_o[field], cutoff=15)
+    # smooths 'vmyo' and gets it's derivatives as 'qmyo'
     data_s["vmyo"], data_s["qmyo"] = smooth(data_o["t"], data_s["t"], data_o["vmyo"], cutoff=15)
     data_s["vmyo"] -= data_s["vmyo"][0]
     data_s["vlad"] = cumulative_trapezoid(data_s["qlad"], data_s["t"], initial=0)
+    # returns the dictionary 
     return data_s
 
 
@@ -263,7 +287,6 @@ def plot_data(animal, data):
     plt.tight_layout()
     plt.savefig(f"{animal}_data.pdf")
     plt.close()
-
 
 def plot_results(animal, config, data):
     labels = {"qlad": "LAD Flow (scaled) [ml/s]",
@@ -354,37 +377,51 @@ def plot_parameters(animal, optimized):
     plt.savefig(f'{animal}_{model}_parameters.pdf')
     plt.close()
 
+# The objective function used for the optimization of the parameters
 def get_objective(ref, sim, t=None):
+    # If a specifc time is given then tnat value is evaluated 
     if t is not None:
         ref = ref[t]
         sim = sim[t]
+    # objective function which normalizes the difference using the mean 
     obj = (ref - sim) / np.mean(ref)
     return obj
 
-
+# Optimizes the parameters using a least squares optimization and returns the edited config 
 def optimize_zero_d(config, p0, data, verbose=0):
+    # grabs the references for the pressure and volume from the actual data 
     pref = data["s"]["pat"]
     vref = data["s"]["vmyo"]
+    # defines a cost function for the parameters 
     def cost_function(p):
+        # sets parameters according to passed p array for the x in the set_params functions 
         pset = set_params(config, p0, p)
+        # prints value that are set if verbose is 1 
         if verbose:
             for val in pset:
                 print(f"{val:.1e}", end="\t")
         t_p = [0, np.argmax(pref), -1]
         t_q = [0, np.argmin(vref), -1]
+        # runs the simulation and gets the objective function value and saves them for 
+        # both the pressure and the volume 
         obj_p = get_objective(pref, get_sim_p(config))
         obj_v = get_objective(vref, get_sim_v(config))
+        # concatenates them to return one object 
         obj = np.concatenate((obj_p, obj_v))
+        # prints them if opted to 
         if verbose:
             print(f"{np.linalg.norm(obj):.1e}", end="\n")
         return obj
-
+    # gets the initial parameter values 
     initial = get_params(p0)
+    # prints them if opted to 
     if verbose:
         for k in p0.keys():
             print(f"{k[1]}", end="\t")
         print("obj", end="\n")
+    # runs a leas squares on the initial values with the cost_function 
     res = least_squares(cost_function, initial, jac="2-point")#, method="lm", diff_step=1e-3
+    # sets the parameters based on the results of least squares 
     set_params(config, p0, res.x)
     return config
 
