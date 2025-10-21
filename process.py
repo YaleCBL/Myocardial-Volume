@@ -51,21 +51,23 @@ def read_data(animal, study):
     data["qlad"] /= 60.0 # convert from ml/min to ml/s
     data["qmyo"] = np.gradient(data["vmyo"], data["t"])
     data["vlad"] = cumulative_trapezoid(data["qlad"], data["t"], initial=0)
+    dvlad = data["vlad"].max() - data["vlad"].min()
 
     csv_file = os.path.join("data", animal + "_microsphere.csv")
     df = pd.read_csv(csv_file)
-    data["dvcycle"] = df[f"{study} ischemic flow [ml/min/g]"].to_numpy()
+    data["dvcycle"] = df[f"{study} ischemic flow [ml/min/g]"][0]
+    # print(f" ({dvlad:.2f}, {data['dvcycle']:.2f})")
     data["dvcycle"] /= 60.0  # convert from ml/min/g to ml/s/g
     data["dvcycle"] *= data["t"][-1] # convert from ml/s/g to ml/cycle/g
 
     # scale the LAD inflow according to microsphere measurements
-    dvlad = data["vlad"].max() - data["vlad"].min()
-    dvmyo = data["vmyo"].max() - data["vmyo"].min()
-
-    # scale so all LAD inflow goes entirely to the myocardium
     scale_vol = data["dvcycle"] / dvlad
     data["qlad"] *= scale_vol
     data["vlad"] *= scale_vol
+
+    # read literature data
+    lit_path = os.path.join("data", "kim10b_table3.json")
+    lit_data = read_config(lit_path)
     return data
 
 
@@ -154,6 +156,10 @@ def convert_units(k, val, units):
         name = "Pressure"
     elif k == "L":
         name = "Inductance"
+    elif k == "t":
+        name = "Time constant"
+        valu = val
+        unit = "s"
     else:
         raise ValueError(f"Unknown name {k}")
     
@@ -315,6 +321,15 @@ def plot_parameters(animal, optimized):
     #     for res in ['Ra1', 'Ra2', 'Rv1']:
     #         optimized[s][total] += optimized[s][('BC_COR', res)]
 
+    # add time constants
+    # pairs = [('Ra1', 'Ca'), ('Ra2', 'Cc')]
+    # for s in studies:
+    #     for i, pair in enumerate(pairs):
+    #         total = ('BC_COR', 'tau'+str(i))
+    #         optimized[s][total] = 1
+    #         for res in pair:
+    #             optimized[s][total] *= optimized[s][('BC_COR', res)]
+
     n_param = len(optimized[studies[0]].keys())
     _, axes = plt.subplots(1, n_param, figsize=(n_param*3, 6))
     if n_param == 1:
@@ -399,10 +414,6 @@ def estimate(animal, study, verb=0):
     # interoplate to simulation time points and smooth flow rate
     data_s = smooth_data(data_o, 201)
 
-    # read literature data
-    lit_path = os.path.join("data", "kim10b_table3.json")
-    lit_data = read_config(lit_path)
-
     # create 0D model
     config = read_config(f"{model}.json")
     config[str_param][str_time] = len(data_s["t"])
@@ -461,7 +472,7 @@ def main():
                         if val in bc["bc_values"]:
                             optimized[study][(param, val)] = bc["bc_values"][val]
     
-    # plot_data(animal, data)
+    plot_data(animal, data)
     plot_results(animal, config, data)
     plot_parameters(animal, optimized)
 
