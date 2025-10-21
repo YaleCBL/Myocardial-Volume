@@ -46,9 +46,8 @@ def read_data(animal, study):
     data["pat"] = df["AoP [Ba]"].to_numpy()
     data["pven"] = df["LVP [Ba]"].to_numpy()
     data["vmyo"] = df["tissue vol ischemic [ml]"].to_numpy()
-    data["qlad"] = df["LAD Flow [ml/min]"].to_numpy()
+    data["qlad"] = df["LAD Flow [ml/s]"].to_numpy()
 
-    data["qlad"] /= 60.0 # convert from ml/min to ml/s
     data["qmyo"] = np.gradient(data["vmyo"], data["t"])
     data["vlad"] = cumulative_trapezoid(data["qlad"], data["t"], initial=0)
     dvlad = data["vlad"].max() - data["vlad"].min()
