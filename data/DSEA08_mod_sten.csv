@@ -1,4 +1,4 @@
-cardiac cycle [%],t abs [s],t [s],ECG [mV],AoP [mmHg],LVP [mmHg],LAD Flow [mL/s],rad strain,circ strain,long strain,tissue vol ischemic [ml],tissue vol border [ml],tissue vol remote [ml]
+cardiac cycle [%],t abs [s],t [s],ECG [mV],AoP [mmHg],LVP [mmHg],LAD Flow [ml/s],rad strain,circ strain,long strain,tissue vol ischemic [ml],tissue vol border [ml],tissue vol remote [ml]
 0.0,0.0,0.609984,-0.479,45.63,22.505,5.419,0.0,0.0,0.0,0.598304,0.723902,0.911253
 0.009523633615030976,0.0067030000000000145,0.616687,0.663,45.416,25.053,5.419,0.00155722421016149,-0.00254786516677356,0.000327835707290595,0.597997,0.724853,0.908605
 0.01904868803173513,0.013407000000000058,0.623391,0.628,45.416,28.025,4.926,0.00310777778205409,-0.00452678874272704,0.00107549300831751,0.597999,0.724359,0.905056

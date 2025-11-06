@@ -1,4 +1,4 @@
-cardiac cycle [%],t abs [s],t [s],ECG [mV],AoP [mmHg],LVP [mmHg],LAD Flow [mL/s],tissue vol ischemic [ml],tissue vol border [ml],tissue vol remote [ml]
+cardiac cycle [%],t abs [s],t [s],ECG [mV],AoP [mmHg],LVP [mmHg],LAD Flow [ml/s],tissue vol ischemic [ml],tissue vol border [ml],tissue vol remote [ml]
 0.0,0.0,0.475922,0.546,80.811,37.579,25.123,0.606238,0.725806,0.941203
 0.012986786530786262,0.0067030000000000145,0.482625,-0.865,80.171,44.373,25.123,0.605752,0.725057,0.940395
 0.025973573061572417,0.013405999999999973,0.489328,-0.611,79.532,53.715,24.631,0.607646,0.724309,0.935799
