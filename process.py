@@ -232,7 +232,7 @@ def plot_parameters(animal, optimized):
             axes[i].bar(range(len(studies)), values)
             axes[i].set_xticks(range(len(studies)))
             axes[i].set_xticklabels(studies, rotation=45)
-            axes[i].set_title(f'{animal} {val}')
+            axes[i].set_title(f'{get_name(animal)} {val}')
             axes[i].tick_params(axis='both', which='major')
 
     plt.tight_layout()
@@ -319,13 +319,13 @@ def estimate(data, verb=0):
     set_params(config, pini)
 
     # set initial values
-    bounds = {"R": (1e4, 1e8), "Rv": (1e2, 1e6), "C": (1e-12, 1e-3), "L": (1e-12, 1e12)}
+    bounds = {"R": (1e2, 1e8), "Rv": (1e2, 1e6), "C": (1e-12, 1e-5), "L": (1e-12, 1e12)}
     p0 = OrderedDict()
     p0[("BC_COR", "Ra1")] = (1e+5, *bounds["R"])
     p0[("BC_COR", "Ra2")] = (1e+5, *bounds["R"])
     p0[("BC_COR", "Rv1")] = (1e+4, *bounds["Rv"])
-    p0[("BC_COR", "Ca")] = (1e-5, *bounds["C"])
-    p0[("BC_COR", "Cc")] = (1e-5, *bounds["C"])
+    p0[("BC_COR", "Ca")] = (1e-7, *bounds["C"])
+    p0[("BC_COR", "Cc")] = (1e-7, *bounds["C"])
     # p0[("BC_COR", "P_v")] = (1e3, *bounds["P"])
     set_params(config, p0)
 
@@ -336,8 +336,8 @@ def estimate(data, verb=0):
 
 
 def main():
-    animals = [8]
-    # animals = [8, 10, 15, 16] # clean
+    # animals = [8]
+    animals = [8, 10, 15, 16] # clean
     # animals = [6, 7, 8, 10, 14, 15, 16] # all
     studies = [
         "baseline",
