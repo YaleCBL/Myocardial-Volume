@@ -48,10 +48,9 @@ def read_data(animal, study):
 
     csv_file = os.path.join("data", f"{get_name(animal)}_microsphere.csv")
     df = pd.read_csv(csv_file)
-    data["dvcycle"] = df[f"{study} ischemic flow [ml/cycle]"][0]
-    # print(f" ({dvlad:.2f}, {data['dvcycle']:.2f})")
+    data["dvcycle"] = df[f"{study} ischemic flow [ml/min/g]"].to_numpy()
     data["dvcycle"] /= 60.0  # convert from ml/min/g to ml/s/g
-    # data["dvcycle"] *= data["t"][-1] # convert from ml/s/g to ml/cycle/g
+    data["dvcycle"] *= data["t"][-1] # convert from ml/s/g to ml/cycle/g
 
     # scale the LAD inflow according to microsphere measurements
     scale_vol = data["dvcycle"] / dvlad
@@ -151,7 +150,7 @@ def plot_results(animal, config, data):
     if len(config) == 1:
         axs = axs.reshape(-1,1)
     for j, study in enumerate(config.keys()):
-        with open(f'{animal}_{study}.json', "w") as f:
+        with open(f'results/{animal}_{study}.json', "w") as f:
             json.dump(config[study], f, indent=2)
 
         ti = config[study]["boundary_conditions"][0]["bc_values"]["t"]
@@ -320,11 +319,11 @@ def estimate(data, verb=0):
     set_params(config, pini)
 
     # set initial values
-    bounds = {"R": (1e3, 1e6), "C": (1e-12, 1e-3), "L": (1e-12, 1e12)}
+    bounds = {"R": (1e4, 1e8), "Rv": (1e2, 1e6), "C": (1e-12, 1e-3), "L": (1e-12, 1e12)}
     p0 = OrderedDict()
-    p0[("BC_COR", "Ra1")] = (1e+4, *bounds["R"])
-    p0[("BC_COR", "Ra2")] = (1e+4, *bounds["R"])
-    p0[("BC_COR", "Rv1")] = (1e+4, *bounds["R"])
+    p0[("BC_COR", "Ra1")] = (1e+5, *bounds["R"])
+    p0[("BC_COR", "Ra2")] = (1e+5, *bounds["R"])
+    p0[("BC_COR", "Rv1")] = (1e+4, *bounds["Rv"])
     p0[("BC_COR", "Ca")] = (1e-5, *bounds["C"])
     p0[("BC_COR", "Cc")] = (1e-5, *bounds["C"])
     # p0[("BC_COR", "P_v")] = (1e3, *bounds["P"])
@@ -363,6 +362,7 @@ def process(animal, studies):
     plot_data(animal, data)
 
     for study in studies:
+        print(f"Estimating {study}...")
         config[study], p0 = estimate(data[study], verb=1)
         params = [opt[0] for opt in p0]
         values = [opt[1] for opt in p0]

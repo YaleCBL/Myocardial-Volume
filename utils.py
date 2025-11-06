@@ -10,7 +10,7 @@ str_time = "number_of_time_pts_per_cardiac_cycle"
 
 unit_choices = ["cgs", "mmHg", "paper"]
 units = unit_choices[2]
-mmHg_to_Ba = 133.322 * 10
+mmHg_to_Ba = 1333.22
 Ba_to_mmHg = 1 / mmHg_to_Ba
 
 # Reads in json file with given name and returns the object containing all information in it 
