@@ -1,0 +1,4 @@
+DSEA14 baseline, mod_sten, mod_sten_dob are missing AoP
+DSEA14 mild_sten, mild_stend_dob AoP mislabeled as LVP
+DSEA06 is missing mod_sten_dob ischemic flow
+DSEA07_mild_sten_dob has bad LV pressure

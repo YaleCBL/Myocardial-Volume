@@ -24,8 +24,13 @@ def xlsx_to_csvs(excel_path, output_dir=None):
 
 # export csv's
 in_folder = "/Users/pfaller/Documents/Lab/people/john_stendahl/data_xlsx"
-fnames = ["DSEA08 Data for Martin cleaned.xlsx",]
-# fnames = ["DSEA16 Data for Martin_multicycle cleaned.xlsx"]
+fnames = ["DSEA06 Data for Martin_multicycle cleaned.xlsx",
+          "DSEA07 Data for Martin_multicycle cleaned.xlsx",
+          "DSEA08 Data for Martin cleaned.xlsx",
+          "DSEA10 Data for Martin_c cleaned.xlsx",
+          "DSEA14 Data for Martin_cf cleaned.xlsx",
+          "DSEA15 Data for Martin_multicycle cleaned.xlsx",
+          "DSEA16 Data for Martin_multicycle cleaned.xlsx"]
 
 for fname in fnames:
     xlsx_to_csvs(os.path.join(in_folder, fname), "data")
