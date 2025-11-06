@@ -18,7 +18,7 @@ from scipy.fftpack import fft, ifft, fftfreq
 from scipy.signal import savgol_filter
 from scipy.integrate import cumulative_trapezoid
 
-from utils import read_config, mmHg_to_Ba, Ba_to_mmHg, str_bc, str_param, str_time, smooth, get_params, set_params
+from utils import read_config, mmHg_to_Ba, Ba_to_mmHg, str_val, str_bc, str_param, str_time, smooth, get_params, set_params, print_params, convert_units, units
 
 n_in = "BC_AT:BV"
 n_out = "BV:BC_COR"
@@ -59,7 +59,7 @@ def read_data(animal, study):
     data["vlad"] *= scale_vol
 
     # read literature data
-    lit_path = os.path.join("data", "kim10b_table3.json")
+    lit_path = os.path.join(os.path.join("models", "kim10b_table3.json"))
     lit_data = read_config(lit_path)
     return data
 
@@ -179,7 +179,7 @@ def plot_results(animal, config, data):
                 axs[i, j].set_ylabel(labels[k])
 
     plt.tight_layout()
-    plt.savefig(f"plots/{animal}_{model}_simulated.pdf")
+    plt.savefig(f"plots/{get_name(animal)}_{model}_simulated.pdf")
     plt.close()
 
 def plot_parameters(animal, optimized):
@@ -237,7 +237,7 @@ def plot_parameters(animal, optimized):
             axes[i].tick_params(axis='both', which='major')
 
     plt.tight_layout()
-    plt.savefig(f"plots/{animal}_{model}_parameters.pdf")
+    plt.savefig(f"plots/{get_name(animal)}_{model}_parameters.pdf")
     plt.close()
 
 # The objective function used for the optimization of the parameters
@@ -308,7 +308,7 @@ def read_and_smooth_data(animal, study):
 
 def estimate(data, verb=0):
     # create 0D model
-    config = read_config(f"{model}.json")
+    config = read_config(f"models/{model}.json")
     config[str_param][str_time] = len(data["s"]["t"])
 
     # set boundary conditions
@@ -320,12 +320,12 @@ def estimate(data, verb=0):
     set_params(config, pini)
 
     # set initial values
-    bounds = {"R": (1e2, 1e9), "C": (1e-8, 1e-4), "L": (1e-12, 1e12), "P": (1e-3, 1e9)}
+    bounds = {"R": (1e3, 1e6), "C": (1e-12, 1e-3), "L": (1e-12, 1e12)}
     p0 = OrderedDict()
-    p0[("BC_COR", "Ra1")] = (1e+5, *bounds["R"])
-    p0[("BC_COR", "Ra2")] = (1e+5, *bounds["R"])
-    p0[("BC_COR", "Rv1")] = (1e+5, *bounds["R"])
-    p0[("BC_COR", "Ca")] = (1e-6, *bounds["C"])
+    p0[("BC_COR", "Ra1")] = (1e+4, *bounds["R"])
+    p0[("BC_COR", "Ra2")] = (1e+4, *bounds["R"])
+    p0[("BC_COR", "Rv1")] = (1e+4, *bounds["R"])
+    p0[("BC_COR", "Ca")] = (1e-5, *bounds["C"])
     p0[("BC_COR", "Cc")] = (1e-5, *bounds["C"])
     # p0[("BC_COR", "P_v")] = (1e3, *bounds["P"])
     set_params(config, p0)
@@ -337,9 +337,9 @@ def estimate(data, verb=0):
 
 
 def main():
-    animal = 8
-    animals_clean = [8, 10, 15, 16]
-    animals_all = [6, 7, 8, 10, 14, 15, 16]
+    animals = [8]
+    # animals = [8, 10, 15, 16] # clean
+    # animals = [6, 7, 8, 10, 14, 15, 16] # all
     studies = [
         "baseline",
         "mild_sten",
@@ -347,7 +347,7 @@ def main():
         "mod_sten", 
         "mod_sten_dob",
     ]
-    for animal in animals_all:
+    for animal in animals:
         process(animal, studies)
     
 
@@ -361,7 +361,6 @@ def process(animal, studies):
         if dat != {}:
             data[study] = dat
     plot_data(animal, data)
-    return
 
     for study in studies:
         config[study], p0 = estimate(data[study], verb=1)
