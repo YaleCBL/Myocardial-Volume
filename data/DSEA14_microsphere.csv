@@ -1,2 +1,2 @@
-baseline ischemic flow [ml/cycle],mild_sten ischemic flow [ml/cycle],mild_sten_dob ischemic flow [ml/cycle],mod_sten ischemic flow [ml/cycle],mod_sten_dob ischemic flow [ml/cycle]
-0.01230128384791589,0.012773018652950127,0.012042896069919031,0.005168486156107868,0.004461108651772682
+baseline ischemic flow [ml/cycle],mild_sten ischemic flow [ml/cycle],mild_sten_dob ischemic flow [ml/cycle],mod_sten ischemic flow [ml/cycle],mod_sten_dob ischemic flow [ml/cycle],baseline ischemic flow [ml/min/g],mild_sten ischemic flow [ml/min/g],mild_sten_dob ischemic flow [ml/min/g],mod_sten ischemic flow [ml/min/g],mod_sten_dob ischemic flow [ml/min/g]
+0.01230128384791589,0.012773018652950127,0.012042896069919031,0.005168486156107868,0.004461108651772682,1.0431116312847897,1.0109725462068027,1.406629945998683,0.46669473493866803,0.5810018925783381
