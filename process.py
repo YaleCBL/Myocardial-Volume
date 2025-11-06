@@ -33,10 +33,12 @@ n_out = "BV:BC_COR"
 model = "coronary"
 
 def read_data(animal, study):
-    data = {}
-    csv_file = os.path.join("data", animal + "_" + study + ".csv")
+    csv_file = os.path.join("data", f"{get_name(animal)}_{study}.csv")
+    if not os.path.isfile(csv_file):
+        print(f"Data file {csv_file} not found.")
+        return {}
     df = pd.read_csv(csv_file)
-    data["t"] = df["t abs [s]"].to_numpy()
+    data = {"t": df["t abs [s]"].to_numpy()}
 
     # convert pressure to cgs units
     for field in df.keys():
@@ -52,12 +54,12 @@ def read_data(animal, study):
     data["vlad"] = cumulative_trapezoid(data["qlad"], data["t"], initial=0)
     dvlad = data["vlad"].max() - data["vlad"].min()
 
-    csv_file = os.path.join("data", animal + "_microsphere.csv")
+    csv_file = os.path.join("data", f"{get_name(animal)}_microsphere.csv")
     df = pd.read_csv(csv_file)
-    data["dvcycle"] = df[f"{study} ischemic flow [ml/min/g]"][0]
+    data["dvcycle"] = df[f"{study} ischemic flow [ml/cycle]"][0]
     # print(f" ({dvlad:.2f}, {data['dvcycle']:.2f})")
     data["dvcycle"] /= 60.0  # convert from ml/min/g to ml/s/g
-    data["dvcycle"] *= data["t"][-1] # convert from ml/s/g to ml/cycle/g
+    # data["dvcycle"] *= data["t"][-1] # convert from ml/s/g to ml/cycle/g
 
     # scale the LAD inflow according to microsphere measurements
     scale_vol = data["dvcycle"] / dvlad
@@ -253,7 +255,6 @@ def smooth_data(data_o, nt):
 
 
 def plot_data(animal, data):
-    # pdb.set_trace()
     n_param = len(data.keys())
     _, ax = plt.subplots(4, n_param, figsize=(n_param*5, 10), sharex="col", sharey="row")
     axt = np.array([[ax[i,j].twinx() for j in range(ax.shape[1])] for i in range(ax.shape[0])])
@@ -290,7 +291,7 @@ def plot_data(animal, data):
                 )
 
     plt.tight_layout()
-    plt.savefig(f"{animal}_data.pdf")
+    plt.savefig(f"plots/{get_name(animal)}_data.pdf")
     plt.close()
 
 def plot_results(animal, config, data):
@@ -330,7 +331,7 @@ def plot_results(animal, config, data):
                 axs[i, j].set_ylabel(labels[k])
 
     plt.tight_layout()
-    plt.savefig(f'{animal}_{model}_simulated.pdf')
+    plt.savefig(f"plots/{animal}_{model}_simulated.pdf")
     plt.close()
 
 def plot_parameters(animal, optimized):
@@ -388,7 +389,7 @@ def plot_parameters(animal, optimized):
             axes[i].tick_params(axis='both', which='major')
 
     plt.tight_layout()
-    plt.savefig(f'{animal}_{model}_parameters.pdf')
+    plt.savefig(f"plots/{animal}_{model}_parameters.pdf")
     plt.close()
 
 # The objective function used for the optimization of the parameters
@@ -440,30 +441,38 @@ def optimize_zero_d(config, p0, data, verbose=0):
     return config
 
 
-def estimate(animal, study, verb=0):
-    name = animal + "_" + study
-    print(name)
+def get_name(animal):
+    return f"DSEA{animal:02d}"
+
+
+def read_and_smooth_data(animal, study):
+    print(f"{get_name(animal)}_{study}")
 
     # read measurements
     data_o = read_data(animal, study)
+    if data_o == {}:
+        return {}
 
     # interoplate to simulation time points and smooth flow rate
     data_s = smooth_data(data_o, 201)
 
+    return {"o": data_o, "s": data_s}
+
+def estimate(data, verb=0):
     # create 0D model
     config = read_config(f"{model}.json")
-    config[str_param][str_time] = len(data_s["t"])
+    config[str_param][str_time] = len(data["s"]["t"])
 
     # set boundary conditions
     pini = {}
-    pini[("BC_AT", "t")] = (data_s["t"].tolist(), None, None)
-    pini[("BC_AT", "Q")] = (data_s["qlad"].tolist(), None, None)
-    pini[("BC_COR", "t")] = (data_s["t"].tolist(), None, None)
-    pini[("BC_COR", "Pim")] = (data_s["pven"].tolist(), None, None)
+    pini[("BC_AT", "t")] = (data["s"]["t"].tolist(), None, None)
+    pini[("BC_AT", "Q")] = (data["s"]["qlad"].tolist(), None, None)
+    pini[("BC_COR", "t")] = (data["s"]["t"].tolist(), None, None)
+    pini[("BC_COR", "Pim")] = (data["s"]["pven"].tolist(), None, None)
     set_params(config, pini)
 
     # set initial values
-    bounds = {"R": (1e2, 1e9), "C": (1e-9, 1e-3), "L": (1e-12, 1e12), "P": (1e-3, 1e9)}
+    bounds = {"R": (1e2, 1e9), "C": (1e-8, 1e-4), "L": (1e-12, 1e12), "P": (1e-3, 1e9)}
     p0 = OrderedDict()
     p0[("BC_COR", "Ra1")] = (1e+5, *bounds["R"])
     p0[("BC_COR", "Ra2")] = (1e+5, *bounds["R"])
@@ -473,15 +482,16 @@ def estimate(animal, study, verb=0):
     # p0[("BC_COR", "P_v")] = (1e3, *bounds["P"])
     set_params(config, p0)
 
-    data = {"o": data_o, "s": data_s}
     config_opt = optimize_zero_d(config, p0, data, verbose=verb)
     print_params(config_opt, p0)
 
-    return data, config_opt, p0
+    return config_opt, p0
 
 
 def main():
-    animal = "DSEA08"
+    animal = 8
+    animals_clean = [8, 10, 15, 16]
+    animals_all = [6, 7, 8, 10, 14, 15, 16]
     studies = [
         "baseline",
         "mild_sten",
@@ -489,12 +499,24 @@ def main():
         "mod_sten", 
         "mod_sten_dob",
     ]
+    for animal in animals_all:
+        process(animal, studies)
+    
+
+def process(animal, studies):
     optimized = defaultdict(dict)
     data = {}
     config = {}
 
     for study in studies:
-        data[study], config[study], p0 = estimate(animal, study, verb=0)
+        dat = read_and_smooth_data(animal, study)
+        if dat != {}:
+            data[study] = dat
+    plot_data(animal, data)
+    return
+
+    for study in studies:
+        config[study], p0 = estimate(data[study], verb=1)
         params = [opt[0] for opt in p0]
         values = [opt[1] for opt in p0]
         for param in params:
@@ -508,7 +530,6 @@ def main():
                         if val in bc["bc_values"]:
                             optimized[study][(param, val)] = bc["bc_values"][val]
     
-    plot_data(animal, data)
     plot_results(animal, config, data)
     plot_parameters(animal, optimized)
 
