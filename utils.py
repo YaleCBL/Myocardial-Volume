@@ -9,7 +9,7 @@ str_param = "simulation_parameters"
 str_time = "number_of_time_pts_per_cardiac_cycle"
 
 unit_choices = ["cgs", "mmHg", "paper"]
-units = unit_choices[2]
+units = unit_choices[0]
 mmHg_to_Ba = 1333.22
 Ba_to_mmHg = 1 / mmHg_to_Ba
 
@@ -102,6 +102,7 @@ def convert_units(k, val, units):
         raise ValueError(f"Unknown name {k}")
     
     if units == "cgs":
+        valu = val
         unit = "cgs"
     elif units == "mmHg":
         if k == "R":
