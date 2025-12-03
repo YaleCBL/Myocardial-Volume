@@ -1,9 +1,11 @@
 import os
 import json
+import pdb
 import numpy as np
 from scipy.fft import fft, ifft, fftfreq
 
 str_val = "zero_d_element_values"
+bc_val = "bc_values"
 str_bc = "boundary_conditions"
 str_param = "simulation_parameters"
 str_time = "number_of_time_pts_per_cardiac_cycle"
@@ -38,21 +40,12 @@ def set_params(config, p, x=None):
     out = []
     # Loops through all the parameters in the dict p 
     for i, (id, k) in enumerate(p.keys()):
-        pval, pmin, pmax = p[(id, k)]
+        pval, _, _ = p[(id, k)]
         
         # if x is not empty then it is the optmized value gathered after the least square optimization 
         if x is not None:
             # sets xval to ith parameter in the p dictionary 
-            xval = x[i]
-            # rearranges the pval, pmin, pmax depending on the value of x 
-            # as the limits causes x to be too small or too large so manually overwrites the values 
-            if xval > 100:
-                pval = pmax
-            elif xval < -100:
-                pval = pmin
-            else:
-                # Inverse of log function used for the bounds 
-                pval = pmin + (pmax - pmin) * 1 / (1 / np.exp(xval) + 1)
+            pval = np.exp(x[i])
         # Sets the output to the pvals that were modified/added to config 
         out += [pval]
 
@@ -81,11 +74,12 @@ def set_params(config, p, x=None):
 def get_params(p):
     out = []
     for k in p.keys():
-        pval, pmin, pmax = p[k]
-        out += [np.log((pval - pmin) / (pmax - pmin))]
+        pval, _, _ = p[k]
+        out += [np.log(pval)]
     return out
 
 def convert_units(k, val, units):
+    unit = ""
     if k == "R":
         name = "Resistance"
     elif k == "C":
@@ -98,12 +92,17 @@ def convert_units(k, val, units):
         name = "Time constant"
         valu = val
         unit = "s"
+    elif k == "r":
+        name = "Residual"
+        valu = val
+        unit = "-"
     else:
         raise ValueError(f"Unknown name {k}")
     
     if units == "cgs":
         valu = val
-        unit = "cgs"
+        if unit != "":
+            unit = "cgs"
     elif units == "mmHg":
         if k == "R":
             valu = val * Ba_to_mmHg

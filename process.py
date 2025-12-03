@@ -18,7 +18,7 @@ from scipy.fftpack import fft, ifft, fftfreq
 from scipy.signal import savgol_filter
 from scipy.integrate import cumulative_trapezoid
 
-from utils import read_config, mmHg_to_Ba, Ba_to_mmHg, str_val, str_bc, str_param, str_time, smooth, get_params, set_params, print_params, convert_units, units
+from utils import read_config, mmHg_to_Ba, Ba_to_mmHg, str_val, bc_val, str_bc, str_param, str_time, smooth, get_params, set_params, print_params, convert_units, units
 
 n_in = "BC_AT:BV"
 n_out = "BV:BC_COR"
@@ -63,10 +63,13 @@ def read_data(animal, study):
     return data
 
 def get_sim(config, loc):
-    sim = pysvzerod.simulate(config)
-    res = sim[sim["name"] == loc]["y"].to_numpy()
-    if not res.size:
-        raise ValueError(f"Result {loc} not found. Options are:\n" + ", ".join(np.unique(sim["name"]).tolist()))
+    try:
+        sim = pysvzerod.simulate(config)
+        res = sim[sim["name"] == loc]["y"].to_numpy()
+        if not res.size:
+            raise ValueError(f"Result {loc} not found. Options are:\n" + ", ".join(np.unique(sim["name"]).tolist()))
+    except RuntimeError:
+        res = np.array([0.0])
     return res
 
 def get_sim_p(config):
@@ -281,11 +284,11 @@ def optimize_zero_d(config, p0, data, verbose=0):
         for k in p0.keys():
             print(f"{k[1]}", end="\t")
         print("obj", end="\n")
-    # runs a leas squares on the initial values with the cost_function 
-    res = least_squares(cost_function, initial, jac="2-point")#, method="lm", diff_step=1e-3
+    bounds = [(np.log(pmin), np.log(pmax)) for _, pmin, pmax in p0.values()]
+    res = least_squares(cost_function, initial, bounds=np.array(bounds).T)
     # sets the parameters based on the results of least squares 
     set_params(config, p0, res.x)
-    return config
+    return config, np.linalg.norm(res.fun)
 
 
 def get_name(animal):
@@ -319,26 +322,31 @@ def estimate(data, verb=0):
     set_params(config, pini)
 
     # set initial values
-    bounds = {"R": (1e2, 1e8), "Rv": (1e2, 1e6), "C": (1e-12, 1e-5), "L": (1e-12, 1e12)}
+    bounds = {"Ra1": (1e5, 1e8), 
+              "Ra2": (1e5, 1e8), 
+              "Rv1": (1e3, 1e6), 
+              "Ca": (1e-9, 1e-5), 
+              "Cc": (1e-8, 1e-5)}
     p0 = OrderedDict()
-    p0[("BC_COR", "Ra1")] = (1e+5, *bounds["R"])
-    p0[("BC_COR", "Ra2")] = (1e+5, *bounds["R"])
-    p0[("BC_COR", "Rv1")] = (1e+4, *bounds["Rv"])
-    p0[("BC_COR", "Ca")] = (1e-7, *bounds["C"])
-    p0[("BC_COR", "Cc")] = (1e-7, *bounds["C"])
+    p0[("BC_COR", "Ra1")] = (1e+6, *bounds["Ra1"])
+    p0[("BC_COR", "Ra2")] = (1e+6, *bounds["Ra2"])
+    p0[("BC_COR", "Rv1")] = (1e+5, *bounds["Rv1"])
+    p0[("BC_COR", "Ca")] = (1e-7, *bounds["Ca"])
+    p0[("BC_COR", "Cc")] = (1e-6, *bounds["Cc"])
     # p0[("BC_COR", "P_v")] = (1e3, *bounds["P"])
     set_params(config, p0)
 
-    config_opt = optimize_zero_d(config, p0, data, verbose=verb)
+    config_opt, err = optimize_zero_d(config, p0, data, verbose=verb)
     print_params(config_opt, p0)
 
-    return config_opt, p0
+    return config_opt, p0, err
 
 
 def main():
-    # animals = [8]
-    animals = [8, 10, 15, 16] # clean
+    # animals = [8] # initial
+    # animals = [8, 10, 15, 16] # clean
     # animals = [6, 7, 8, 10, 14, 15, 16] # all
+    animals = [15]
     studies = [
         "baseline",
         "mild_sten",
@@ -354,6 +362,7 @@ def process(animal, studies):
     optimized = defaultdict(dict)
     data = {}
     config = {}
+    err = {}
 
     for study in studies:
         dat = read_and_smooth_data(animal, study)
@@ -363,7 +372,7 @@ def process(animal, studies):
 
     for study in studies:
         print(f"Estimating {study}...")
-        config[study], p0 = estimate(data[study], verb=1)
+        config[study], p0, err = estimate(data[study], verb=1)
         params = [opt[0] for opt in p0]
         values = [opt[1] for opt in p0]
         for param in params:
@@ -376,6 +385,10 @@ def process(animal, studies):
                     if bc["bc_name"] == param:
                         if val in bc["bc_values"]:
                             optimized[study][(param, val)] = bc["bc_values"][val]
+        
+        optimized[study][("global", "tc1")] = optimized[study][("BC_COR", "Ra1")] * optimized[study][("BC_COR", "Ca")]
+        optimized[study][("global", "tc2")] = optimized[study][("BC_COR", "Rv1")] * optimized[study][("BC_COR", "Cc")]
+        optimized[study][("global", "residual")] = err
     
     plot_results(animal, config, data)
     plot_parameters(animal, optimized)
