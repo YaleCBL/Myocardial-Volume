@@ -101,7 +101,7 @@ def convert_units(k, val, units):
     
     if units == "cgs":
         valu = val
-        if unit != "":
+        if unit == "":
             unit = "cgs"
     elif units == "mmHg":
         if k == "R":
