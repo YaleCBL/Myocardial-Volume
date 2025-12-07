@@ -22,7 +22,7 @@ from utils import read_config, mmHg_to_Ba, Ba_to_mmHg, str_val, bc_val, str_bc, 
 
 n_in = "BC_AT:BV"
 n_out = "BV:BC_COR"
-model = "coronary"
+model = "coronary_varres"
 
 def read_data(animal, study):
     csv_file = os.path.join("data", f"{get_name(animal)}_{study}.csv")
@@ -69,6 +69,7 @@ def get_sim(config, loc):
         if not res.size:
             raise ValueError(f"Result {loc} not found. Options are:\n" + ", ".join(np.unique(sim["name"]).tolist()))
     except RuntimeError:
+        print("Simulation failed")
         res = np.array([0.0])
     return res
 
@@ -77,7 +78,8 @@ def get_sim_p(config):
 
 
 def get_sim_v(config):
-    if config['boundary_conditions'][1]['bc_type'] == "CORONARY":
+    pdb.set_trace()
+    if "CORONARY" in config['boundary_conditions'][1]['bc_type']:
         v_sim = get_sim(config, "volume_im:BC_COR")
     else:
         q_sim = get_sim(config, "flow:" + n_in)
@@ -153,7 +155,7 @@ def plot_results(animal, config, data):
     if len(config) == 1:
         axs = axs.reshape(-1,1)
     for j, study in enumerate(config.keys()):
-        with open(f'results/{animal}_{study}.json', "w") as f:
+        with open(f'results/{get_name(animal)}_{study}_{model}.json', "w") as f:
             json.dump(config[study], f, indent=2)
 
         ti = config[study]["boundary_conditions"][0]["bc_values"]["t"]
@@ -421,19 +423,17 @@ def estimate(data, verb=0):
     pini[("BC_COR", "Pim")] = (data["s"]["pven"].tolist(), None, None)
     set_params(config, pini)
 
-    # set initial values
-    bounds = {"Ra1": (1e5, 1e8), 
-              "Ra2": (1e5, 1e8), 
-              "Rv1": (1e3, 1e6), 
-              "Ca": (1e-9, 1e-5), 
-              "Cc": (1e-8, 1e-5)}
+    # set initial values (val, min, max)
     p0 = OrderedDict()
-    # p0[("BC_COR", "Ra1")] = (1e+6, *bounds["Ra1"])
-    p0[("BC_COR", "Ra2")] = (1e+6, *bounds["Ra2"])
-    p0[("BC_COR", "Rv1")] = (1e+5, *bounds["Rv1"])
-    # p0[("BC_COR", "Ca")] = (1e-7, *bounds["Ca"])
-    p0[("BC_COR", "Cc")] = (1e-6, *bounds["Cc"])
-    # p0[("BC_COR", "P_v")] = (1e3, *bounds["P"])
+    p0[("BC_COR", "Ra1")] = (1e+6, 1e5, 1e8)
+    # p0[("BC_COR", "Ra2")] = (1e+6, 1e5, 1e8)
+    p0[("BC_COR", "Ra2_min")] = (1e+6, 1e5, 1e8)
+    p0[("BC_COR", "Ra2_max")] = (1e+6, 1e5, 1e8)
+    p0[("BC_COR", "Rv1")] = (1e+5, 1e3, 1e6)
+    p0[("BC_COR", "Ca")] = (1e-7, 1e-9, 1e-5)
+    p0[("BC_COR", "Cc")] = (1e-6, 1e-8, 1e-5)
+    p0[("BC_COR", "T_vc")] = (0.1, 1e-4, 0.3)
+    p0[("BC_COR", "T_vr")] = (0.3, 1e-4, 0.5)
     set_params(config, p0)
 
     config_opt, err = optimize_zero_d(config, p0, data, verbose=verb)

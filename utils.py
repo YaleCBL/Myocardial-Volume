@@ -92,6 +92,10 @@ def convert_units(k, val, units):
         name = "Time constant"
         valu = val
         unit = "s"
+    elif k == "T":
+        name = "Time"
+        valu = val
+        unit = "s"
     elif k == "r":
         name = "Residual"
         valu = val
