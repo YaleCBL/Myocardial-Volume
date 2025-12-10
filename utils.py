@@ -15,10 +15,22 @@ units = unit_choices[0]
 mmHg_to_Ba = 1333.22
 Ba_to_mmHg = 1 / mmHg_to_Ba
 
-# Reads in json file with given name and returns the object containing all information in it 
+
+# Reads in json file with given name and returns the object containing all information in it
+# Parameter mapping functions
+def get_param_map(map_type):
+    if map_type == "log":
+        return np.log, np.exp
+    elif map_type == "lin":
+        return lambda x: x, lambda x: x
+    else:
+        raise ValueError(f"Unknown map type: {map_type}. Use 'log' or 'lin'")
+
+
 def read_config(fname):
     with open(fname, "r") as f:
         return json.load(f)
+
 
 def read_lit_data(fname):
     lit_path = os.path.join("data", fname)
@@ -38,24 +50,27 @@ def read_lit_data(fname):
 # new values for the resistors and capacitors are inputted after they have been modified 
 def set_params(config, p, x=None):
     out = []
-    # Loops through all the parameters in the dict p 
+    # Loops through all the parameters in the dict p
     for i, (id, k) in enumerate(p.keys()):
-        pval, _, _ = p[(id, k)]
-        
-        # if x is not empty then it is the optmized value gathered after the least square optimization 
+        param_tuple = p[(id, k)]
+        pval, _, _, map_type = param_tuple
+
+        # if x is not empty then it is the optmized value gathered after the least square optimization
         if x is not None:
-            # sets xval to ith parameter in the p dictionary 
-            pval = np.exp(x[i])
-        # Sets the output to the pvals that were modified/added to config 
+            # Get the inverse map function for this parameter
+            _, inverse_map = get_param_map(map_type)
+            # Apply the inverse map to convert from optimization space back to parameter space
+            pval = inverse_map(x[i])
+        # Sets the output to the pvals that were modified/added to config
         out += [pval]
 
         # sets the parameter specifically checks if they are boundary conditions or vessel parameters
         if "BC" in id:
-            # loops through all the boundary conditions 
+            # loops through all the boundary conditions
             for bc in config[str_bc]:
-                # checks if any of them match the id in the parameters dictionary 
+                # checks if any of them match the id in the parameters dictionary
                 if bc["bc_name"] == id:
-                    # if the parameter is the P (pressure) then it makes it constant 
+                    # if the parameter is the P (pressure) then it makes it constant
                     if k == "P" and isinstance(pval, float):
                         bc["bc_values"][k] = [pval, pval]
                         bc["bc_values"]["t"] = [0, 0.737]
@@ -63,20 +78,31 @@ def set_params(config, p, x=None):
                     else:
                         bc["bc_values"][k] = pval
         else:
-            # Similarly for the vessels just with different names 
+            # Similarly for the vessels just with different names
             for vs in config["vessels"]:
                 if vs["vessel_name"] == id:
                     vs[str_val][k] = pval
     return out
 
-# Simulate bounds for the parameters bounds using log function, as they get closer to the bounds they start changing less and less so the 
-# simulation avoids those values 
+
+# Map parameters to optimization space using the specified mapping (log or linear)
 def get_params(p):
     out = []
     for k in p.keys():
-        pval, _, _ = p[k]
-        out += [np.log(pval)]
+        param_tuple = p[k]
+        # Handle both old format (val, min, max) and new format (val, min, max, map_type)
+        if len(param_tuple) == 4:
+            pval, _, _, map_type = param_tuple
+        else:
+            pval, _, _ = param_tuple
+            map_type = "log"  # default to log for backward compatibility
+
+        # Get the forward map function for this parameter
+        forward_map, _ = get_param_map(map_type)
+        # Apply the forward map to convert from parameter space to optimization space
+        out += [forward_map(pval)]
     return out
+
 
 def convert_units(k, val, units):
     unit = ""
@@ -102,7 +128,7 @@ def convert_units(k, val, units):
         unit = "-"
     else:
         raise ValueError(f"Unknown name {k}")
-    
+
     if units == "cgs":
         valu = val
         if unit == "":
@@ -132,6 +158,7 @@ def convert_units(k, val, units):
 
     return valu, unit, name
 
+
 def print_params(config, param):
     str = ""
     for id, k in param.keys():
@@ -148,7 +175,8 @@ def print_params(config, param):
         str += id + " " + k[0] + f" {val:.1e} " + unit + "\n"
     print(str)
 
-# smooths the data by doing a fourier transform to get rid of certain frequencies 
+
+# smooths the data by doing a fourier transform to get rid of certain frequencies
 def smooth(t, ti, qt, cutoff=10):
     N = len(qt)
     freqs = fftfreq(N, d=t[1] - t[0])
@@ -157,5 +185,5 @@ def smooth(t, ti, qt, cutoff=10):
     qs = np.real(ifft(q_fft))
     dqs_fft = q_fft * (2j * np.pi * freqs)
     dqs = np.real(ifft(dqs_fft))
-    # Linearly interpolates the results to upscale the data set and outputs both the data set and it's derivatives 
+    # Linearly interpolates the results to upscale the data set and outputs both the data set and it's derivatives
     return np.interp(ti, t, qs), np.interp(ti, t, dqs)
