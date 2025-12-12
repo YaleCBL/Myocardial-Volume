@@ -12,7 +12,7 @@ import json
 from collections import OrderedDict
 from collections import defaultdict
 from scipy.interpolate import interp1d
-from scipy.optimize import minimize, least_squares, Bounds
+from scipy.optimize import minimize, least_squares, Bounds, differential_evolution
 from scipy.signal import savgol_filter
 from scipy.fftpack import fft, ifft, fftfreq
 from scipy.signal import savgol_filter
@@ -95,20 +95,41 @@ def get_sim(config, loc):
     return res
 
 
-def get_sim_p(config):
-    return get_sim(config, "pressure:" + n_in)
+def get_sim_pv(config):
+    """Run simulation once and extract both pressure and volume.
 
+    Returns:
+        tuple: (pressure, volume) arrays
+    """
+    try:
+        sim = pysvzerod.simulate(config)
 
-def get_sim_v(config):
-    if "CORONARY" in config["boundary_conditions"][1]["bc_type"]:
-        v_sim = get_sim(config, "volume_im:BC_COR")
-    else:
-        q_sim = get_sim(config, "flow:" + n_in)
+        # Extract pressure
+        p_sim = sim[sim["name"] == "pressure:" + n_in]["y"].to_numpy()
+        if not p_sim.size:
+            raise ValueError(f"Pressure result not found at pressure:{n_in}")
+
+        # Extract volume
+        if "CORONARY" in config["boundary_conditions"][1]["bc_type"]:
+            v_sim = sim[sim["name"] == "volume_im:BC_COR"]["y"].to_numpy()
+            if not v_sim.size:
+                raise ValueError("Volume result not found at volume_im:BC_COR")
+        else:
+            q_sim = sim[sim["name"] == "flow:" + n_in]["y"].to_numpy()
+            if not q_sim.size:
+                raise ValueError(f"Flow result not found at flow:{n_in}")
+            nt = config[str_param][str_time]
+            tmax = config["boundary_conditions"][0]["bc_values"]["t"][-1]
+            ti = np.linspace(0.0, tmax, nt)
+            v_sim = cumulative_trapezoid(q_sim, ti, initial=0)
+
+        v_sim = v_sim - v_sim[0]
+        return p_sim, v_sim
+
+    except RuntimeError:
+        print("Simulation failed")
         nt = config[str_param][str_time]
-        tmax = config["boundary_conditions"][0]["bc_values"]["t"][-1]
-        ti = np.linspace(0.0, tmax, nt)
-        v_sim = cumulative_trapezoid(q_sim, ti, initial=0)
-    return v_sim - v_sim[0]
+        return np.zeros(nt), np.zeros(nt)
 
 
 # smooths the data and interpolates it to a specific size nt
@@ -194,7 +215,7 @@ def plot_results(animal, config, data):
         dats["qlad"] = get_sim(config[study], "flow:" + n_in)
         dats["pven"] = datm["pven"]
         dats["pat"] = get_sim(config[study], "pressure:" + n_in)
-        dats["vmyo"] = get_sim_v(config[study])
+        _, dats["vmyo"] = get_sim_pv(config[study])
 
         convert = {"p": Ba_to_mmHg, "v": 1.0, "q": 1.0}
 
@@ -501,10 +522,11 @@ def optimize_zero_d(config, p0, data, verbose=0):
                 print(f"{val:.1e}", end="\t")
         t_p = [0, np.argmax(pref), -1]
         t_v = [0, np.argmin(vref), -1]
-        # runs the simulation and gets the objective function value and saves them for
-        # both the pressure and the volume
-        obj_p = get_objective(pref, get_sim_p(config))
-        obj_v = get_objective(vref, get_sim_v(config))
+        # runs the simulation ONCE and gets both pressure and volume
+        p_sim, v_sim = get_sim_pv(config)
+        # compute objective function for both the pressure and the volume
+        obj_p = get_objective(pref, p_sim)
+        obj_v = get_objective(vref, v_sim)
         # concatenates them to return one object
         obj = np.concatenate((obj_p, obj_v))
         obj_history.append(np.linalg.norm(obj))
@@ -580,21 +602,26 @@ def estimate(data, animal, study, verb=0):
 
     # set initial values (val, min, max, map_type)
     # map_type can be 'log' (logarithmic) or 'linear'
+    # We optimize resistances and time constants directly
+    # Ra2 parameterization: Ra2 (geometric mean) and ratio_Ra2 (max/min)
+    #   Ra2_min = Ra2 / sqrt(ratio_Ra2)
+    #   Ra2_max = Ra2 * sqrt(ratio_Ra2)
     p0 = OrderedDict()
     p0[("BC_COR", "Ra1")] = (1e6, 1e5, 1e8, "log")
-    # p0[("BC_COR", "Ra2")] = (1e+6, 1e5, 1e8, 'log')
-    p0[("BC_COR", "Ra2_min")] = (1e6, 1e5, 1e8, "log")
-    p0[("BC_COR", "Ra2_max")] = (1e6, 1e5, 1e8, "log")
     p0[("BC_COR", "Rv1")] = (1e5, 1e3, 1e6, "log")
-    p0[("BC_COR", "Ca")] = (1e-7, 1e-9, 1e-5, "log")
-    p0[("BC_COR", "Cc")] = (1e-6, 1e-8, 1e-5, "log")
+    p0[("BC_COR", "Ra2")] = (1e6, 1e5, 1e8, "log")  # geometric mean
+    p0[("BC_COR", "ratio_Ra2")] = (1.5, 1.0, 5.0, "lin")  # max/min ratio (must be >= 1)
+    # Time constants: tc1 = Ra1 * Ca, tc2 = Rv1 * Cc
+    p0[("BC_COR", "tc1")] = (0.05, 0.005, 0.5, "lin")  # wider range for robustness
+    p0[("BC_COR", "tc2")] = (0.01, 0.01, 0.5, "lin")
     set_params(config, p0)
 
+    # Use global optimization (differential evolution + local refinement)
     config_opt, err, param_history, obj_history = optimize_zero_d(
         config, p0, data, verbose=verb
     )
-    print_params(config_opt, p0)
-    plot_convergence(animal, study, p0, param_history, obj_history)
+    # print_params(config_opt, p0)
+    # plot_convergence(animal, study, p0, param_history, obj_history)
 
     return config_opt, p0, err
 
@@ -640,6 +667,8 @@ def process(animal, studies):
     for study in data.keys():
         print(f"Estimating {study}...")
         config[study], p0, err = estimate(data[study], animal, study, verb=1)
+
+        # Extract optimized parameters from p0 (resistances and time constants)
         params = [opt[0] for opt in p0]
         values = [opt[1] for opt in p0]
         for param in params:
@@ -653,10 +682,37 @@ def process(animal, studies):
                         if val in bc["bc_values"]:
                             optimized[study][(param, val)] = bc["bc_values"][val]
 
-        # optimized[study][("global", "tc1")] = optimized[study][("BC_COR", "Ra1")] * optimized[study][("BC_COR", "Ca")]
-        # optimized[study][("global", "tc2")] = (
-        #     optimized[study][("BC_COR", "Rv1")] * optimized[study][("BC_COR", "Cc")]
-        # )
+        # Extract computed parameters (Ra2_min/max, Ca, Cc are computed and stored in config)
+        for bc in config[study][str_bc]:
+            if bc["bc_name"] == "BC_COR":
+                if "Ra2_min" in bc["bc_values"]:
+                    optimized[study][("BC_COR", "Ra2_min")] = bc["bc_values"]["Ra2_min"]
+                if "Ra2_max" in bc["bc_values"]:
+                    optimized[study][("BC_COR", "Ra2_max")] = bc["bc_values"]["Ra2_max"]
+                if "Ca" in bc["bc_values"]:
+                    optimized[study][("BC_COR", "Ca")] = bc["bc_values"]["Ca"]
+                if "Cc" in bc["bc_values"]:
+                    optimized[study][("BC_COR", "Cc")] = bc["bc_values"]["Cc"]
+
+        # Compute derived parameters for tracking/plotting
+        # Ra2 (geometric mean) and ratio_Ra2 from Ra2_min and Ra2_max
+        if ("BC_COR", "Ra2_min") in optimized[study] and ("BC_COR", "Ra2_max") in optimized[study]:
+            Ra2_min = optimized[study][("BC_COR", "Ra2_min")]
+            Ra2_max = optimized[study][("BC_COR", "Ra2_max")]
+            Ra2 = np.sqrt(Ra2_min * Ra2_max)  # geometric mean
+            ratio_Ra2 = Ra2_max / Ra2_min
+            optimized[study][("BC_COR", "Ra2")] = Ra2
+            optimized[study][("BC_COR", "ratio_Ra2")] = ratio_Ra2
+
+        # Time constants from R and C values
+        if ("BC_COR", "Ra1") in optimized[study] and ("BC_COR", "Ca") in optimized[study]:
+            tc1 = optimized[study][("BC_COR", "Ra1")] * optimized[study][("BC_COR", "Ca")]
+            optimized[study][("BC_COR", "tc1")] = tc1
+
+        if ("BC_COR", "Rv1") in optimized[study] and ("BC_COR", "Cc") in optimized[study]:
+            tc2 = optimized[study][("BC_COR", "Rv1")] * optimized[study][("BC_COR", "Cc")]
+            optimized[study][("BC_COR", "tc2")] = tc2
+
         optimized[study][("global", "residual")] = err
 
     plot_results(animal, config, data)

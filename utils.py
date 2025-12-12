@@ -45,11 +45,17 @@ def read_lit_data(fname):
                     lit_data[k][kk][kkk] *= 1e-6
     return lit_data
 
-# Rewrites the passed config object to include whatever parameters are in p 
-# Either the boundary conditions for the time varying flow and pressures are inputted or the 
-# new values for the resistors and capacitors are inputted after they have been modified 
+# Rewrites the passed config object to include whatever parameters are in p
+# Either the boundary conditions for the time varying flow and pressures are inputted or the
+# new values for the resistors and capacitors are inputted after they have been modified
+# Time constants (tc1, tc2) are converted to capacitances using C = tau / R
 def set_params(config, p, x=None):
     out = []
+    # Store parameter values for later computation of capacitances from time constants
+    param_values = {}
+    time_constants = {}
+    ra2_params = {}  # Store Ra2 and ratio_Ra2 for later computation
+
     # Loops through all the parameters in the dict p
     for i, (id, k) in enumerate(p.keys()):
         param_tuple = p[(id, k)]
@@ -64,24 +70,74 @@ def set_params(config, p, x=None):
         # Sets the output to the pvals that were modified/added to config
         out += [pval]
 
-        # sets the parameter specifically checks if they are boundary conditions or vessel parameters
-        if "BC" in id:
-            # loops through all the boundary conditions
-            for bc in config[str_bc]:
-                # checks if any of them match the id in the parameters dictionary
-                if bc["bc_name"] == id:
-                    # if the parameter is the P (pressure) then it makes it constant
-                    if k == "P" and isinstance(pval, float):
-                        bc["bc_values"][k] = [pval, pval]
-                        bc["bc_values"]["t"] = [0, 0.737]
-                    # if the parameter is anything else then it updates that parameter's value with whatever was passed as pval
-                    else:
-                        bc["bc_values"][k] = pval
+        # Store parameter value for later use
+        param_values[(id, k)] = pval
+
+        # Check if this is a time constant (starts with 'tc' or 'tau')
+        if k.startswith('tc') or k.startswith('tau'):
+            time_constants[(id, k)] = pval
+        # Check if this is Ra2 or ratio_Ra2 (internal parameters)
+        elif k == 'Ra2' or k == 'ratio_Ra2':
+            ra2_params[(id, k)] = pval
         else:
-            # Similarly for the vessels just with different names
-            for vs in config["vessels"]:
-                if vs["vessel_name"] == id:
-                    vs[str_val][k] = pval
+            # sets the parameter specifically checks if they are boundary conditions or vessel parameters
+            if "BC" in id:
+                # loops through all the boundary conditions
+                for bc in config[str_bc]:
+                    # checks if any of them match the id in the parameters dictionary
+                    if bc["bc_name"] == id:
+                        # if the parameter is the P (pressure) then it makes it constant
+                        if k == "P" and isinstance(pval, float):
+                            bc["bc_values"][k] = [pval, pval]
+                            bc["bc_values"]["t"] = [0, 0.737]
+                        # if the parameter is anything else then it updates that parameter's value with whatever was passed as pval
+                        else:
+                            bc["bc_values"][k] = pval
+            else:
+                # Similarly for the vessels just with different names
+                for vs in config["vessels"]:
+                    if vs["vessel_name"] == id:
+                        vs[str_val][k] = pval
+
+    # Compute Ra2_min and Ra2_max from Ra2 and ratio_Ra2
+    # Ra2 = geometric mean = sqrt(Ra2_min * Ra2_max)
+    # ratio_Ra2 = Ra2_max / Ra2_min
+    # => Ra2_min = Ra2 / sqrt(ratio_Ra2)
+    # => Ra2_max = Ra2 * sqrt(ratio_Ra2)
+    for id in set([id for (id, k) in ra2_params.keys()]):
+        if (id, 'Ra2') in ra2_params and (id, 'ratio_Ra2') in ra2_params:
+            Ra2 = ra2_params[(id, 'Ra2')]
+            ratio_Ra2 = ra2_params[(id, 'ratio_Ra2')]
+            sqrt_ratio = np.sqrt(ratio_Ra2)
+
+            Ra2_min = Ra2 / sqrt_ratio
+            Ra2_max = Ra2 * sqrt_ratio
+
+            # Store in config
+            for bc in config[str_bc]:
+                if bc["bc_name"] == id:
+                    bc["bc_values"]['Ra2_min'] = Ra2_min
+                    bc["bc_values"]['Ra2_max'] = Ra2_max
+
+    # Compute capacitances from time constants and resistances
+    for (id, tc_name), tc_value in time_constants.items():
+        # Compute and store corresponding capacitance in config
+        if tc_name == 'tc1':
+            # tc1 = Ra1 * Ca
+            if (id, 'Ra1') in param_values:
+                Ca = tc_value / param_values[(id, 'Ra1')]
+                # Set Ca in config
+                for bc in config[str_bc]:
+                    if bc["bc_name"] == id:
+                        bc["bc_values"]['Ca'] = Ca
+        elif tc_name == 'tc2':
+            # tc2 = Rv1 * Cc
+            if (id, 'Rv1') in param_values:
+                Cc = tc_value / param_values[(id, 'Rv1')]
+                # Set Cc in config
+                for bc in config[str_bc]:
+                    if bc["bc_name"] == id:
+                        bc["bc_values"]['Cc'] = Cc
     return out
 
 
@@ -106,23 +162,27 @@ def get_params(p):
 
 def convert_units(k, val, units):
     unit = ""
-    if k == "R":
+    if "ratio" in k:
+        name = "Ratio"
+        valu = val
+        unit = "-"
+    elif k[0] == "R":
         name = "Resistance"
-    elif k == "C":
+    elif k[0] == "C":
         name = "Capacitance"
-    elif k == "P":
+    elif k[0] == "P":
         name = "Pressure"
-    elif k == "L":
+    elif k[0] == "L":
         name = "Inductance"
-    elif k == "t":
+    elif k[0] == "t":
         name = "Time constant"
         valu = val
         unit = "s"
-    elif k == "T":
+    elif k[0] == "T":
         name = "Time"
         valu = val
         unit = "s"
-    elif k == "r":
+    elif k[0] == "r":
         name = "Residual"
         valu = val
         unit = "-"
@@ -171,7 +231,7 @@ def print_params(config, param):
                 if vs["vessel_name"] == id:
                     val = vs[str_val][k]
         # convert units
-        val, unit, _ = convert_units(k[0], val, units)
+        val, unit, _ = convert_units(k, val, units)
         str += id + " " + k[0] + f" {val:.1e} " + unit + "\n"
     print(str)
 
