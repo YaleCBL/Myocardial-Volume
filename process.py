@@ -40,6 +40,17 @@ n_in = "BC_AT:BV"
 n_out = "BV:BC_COR"
 model = "coronary_varres"
 
+# Alternative model with inlet Windkessel for pressure pulsatility
+model_wk = "coronary_varres_wk"
+n_in_wk = "BC_AT:R_ao"
+
+# Pressure-driven model: prescribe aortic pressure, fit flow + volume
+model_pdriven = "coronary_varres_pdriven"
+
+# Intramyocardial pump model: explicit pressure source representing myocardial compression
+model_im_pump = "coronary_im_pump"
+n_in_im = "BC_AO:R_epi"  # inlet node for IM pump model
+
 
 def read_data(animal, study):
     csv_file = os.path.join("data", f"{get_name(animal)}_{study}.csv")
@@ -95,19 +106,26 @@ def get_sim(config, loc):
     return res
 
 
-def get_sim_pv(config):
+def get_sim_pv(config, node_in=None):
     """Run simulation once and extract both pressure and volume.
+
+    Args:
+        config: svZeroDSolver configuration
+        node_in: Node name for pressure extraction (default: uses global n_in)
 
     Returns:
         tuple: (pressure, volume) arrays
     """
+    if node_in is None:
+        node_in = n_in
+
     try:
         sim = pysvzerod.simulate(config)
 
         # Extract pressure
-        p_sim = sim[sim["name"] == "pressure:" + n_in]["y"].to_numpy()
+        p_sim = sim[sim["name"] == "pressure:" + node_in]["y"].to_numpy()
         if not p_sim.size:
-            raise ValueError(f"Pressure result not found at pressure:{n_in}")
+            raise ValueError(f"Pressure result not found at pressure:{node_in}")
 
         # Extract volume
         if "CORONARY" in config["boundary_conditions"][1]["bc_type"]:
@@ -115,9 +133,9 @@ def get_sim_pv(config):
             if not v_sim.size:
                 raise ValueError("Volume result not found at volume_im:BC_COR")
         else:
-            q_sim = sim[sim["name"] == "flow:" + n_in]["y"].to_numpy()
+            q_sim = sim[sim["name"] == "flow:" + node_in]["y"].to_numpy()
             if not q_sim.size:
-                raise ValueError(f"Flow result not found at flow:{n_in}")
+                raise ValueError(f"Flow result not found at flow:{node_in}")
             nt = config[str_param][str_time]
             tmax = config["boundary_conditions"][0]["bc_values"]["t"][-1]
             ti = np.linspace(0.0, tmax, nt)
@@ -128,6 +146,97 @@ def get_sim_pv(config):
 
     except RuntimeError:
         print("Simulation failed")
+        nt = config[str_param][str_time]
+        return np.zeros(nt), np.zeros(nt)
+
+
+def get_sim_qv(config, node_in=None):
+    """Run simulation once and extract both flow and volume.
+
+    For pressure-driven models where we prescribe aortic pressure and fit flow + volume.
+
+    Args:
+        config: svZeroDSolver configuration
+        node_in: Node name for flow extraction (default: uses global n_in)
+
+    Returns:
+        tuple: (flow, volume) arrays
+    """
+    if node_in is None:
+        node_in = n_in
+
+    try:
+        sim = pysvzerod.simulate(config)
+
+        # Extract flow
+        q_sim = sim[sim["name"] == "flow:" + node_in]["y"].to_numpy()
+        if not q_sim.size:
+            raise ValueError(f"Flow result not found at flow:{node_in}")
+
+        # Extract volume
+        if "CORONARY" in config["boundary_conditions"][1]["bc_type"]:
+            v_sim = sim[sim["name"] == "volume_im:BC_COR"]["y"].to_numpy()
+            if not v_sim.size:
+                raise ValueError("Volume result not found at volume_im:BC_COR")
+        else:
+            nt = config[str_param][str_time]
+            tmax = config["boundary_conditions"][0]["bc_values"]["t"][-1]
+            ti = np.linspace(0.0, tmax, nt)
+            v_sim = cumulative_trapezoid(q_sim, ti, initial=0)
+
+        v_sim = v_sim - v_sim[0]
+        return q_sim, v_sim
+
+    except RuntimeError:
+        print("Simulation failed")
+        nt = config[str_param][str_time]
+        return np.zeros(nt), np.zeros(nt)
+
+
+def get_sim_qv_im_pump(config, node_in=None):
+    """Run simulation and extract flow and volume for intramyocardial pump model.
+
+    For the IM pump model, myocardial blood volume is computed from mass conservation:
+        V = integral of (Q_in - Q_out)
+
+    This measures the net blood stored in the coronary vasculature.
+
+    Args:
+        config: svZeroDSolver configuration
+        node_in: Node name for flow extraction (default: uses n_in_im)
+
+    Returns:
+        tuple: (flow, volume) arrays
+    """
+    if node_in is None:
+        node_in = n_in_im
+
+    try:
+        sim = pysvzerod.simulate(config)
+
+        # Extract inlet flow
+        q_in = sim[sim["name"] == "flow:" + node_in]["y"].to_numpy()
+        if not q_in.size:
+            raise ValueError(f"Flow result not found at flow:{node_in}")
+
+        # Extract outlet flow (at outlet BC)
+        q_out = sim[sim["name"] == "flow:R_ven:BC_IM"]["y"].to_numpy()
+        if not q_out.size:
+            raise ValueError("Outlet flow not found at flow:R_ven:BC_IM")
+
+        # Compute volume from mass conservation: V = integral of (Q_in - Q_out)
+        nt = config[str_param][str_time]
+        tmax = config["boundary_conditions"][0]["bc_values"]["t"][-1]
+        ti = np.linspace(0.0, tmax, nt)
+
+        dv = q_in - q_out
+        v_sim = cumulative_trapezoid(dv, ti, initial=0)
+        v_sim = v_sim - v_sim[0]
+
+        return q_in, v_sim
+
+    except RuntimeError as e:
+        print(f"Simulation failed: {e}")
         nt = config[str_param][str_time]
         return np.zeros(nt), np.zeros(nt)
 
@@ -149,6 +258,139 @@ def smooth_data(data_o, nt):
     data_s["vlad"] = cumulative_trapezoid(data_s["qlad"], data_s["t"], initial=0)
     # returns the dictionary
     return data_s
+
+
+def align_data(data_s, method="xcorr", reference="pven", target="vmyo", max_shift_fraction=0.2):
+    """Align signals in time to correct for measurement delays.
+
+    The coronary flow and myocardial volume should be synchronized with the
+    cardiac cycle (LV pressure). This function shifts signals to align them.
+
+    Args:
+        data_s: Dictionary with smoothed data (modified in place)
+        method: Alignment method:
+            - "xcorr": Cross-correlation to find optimal lag
+            - "landmarks": Align based on physiological landmarks
+            - "manual": Use a fixed shift (set via max_shift_fraction as actual shift)
+        reference: Signal to use as reference (typically "pven" for LV pressure)
+        target: Signal to shift (typically "vmyo" or "qlad")
+        max_shift_fraction: Maximum shift as fraction of cardiac cycle (for xcorr)
+                           or actual shift in seconds (for manual)
+
+    Returns:
+        shift_samples: Number of samples shifted (positive = target delayed)
+    """
+    t = data_s["t"]
+    dt = t[1] - t[0]
+    T = t[-1] - t[0]  # cardiac cycle length
+    n = len(t)
+
+    if method == "xcorr":
+        # Cross-correlation based alignment
+        ref = data_s[reference]
+        tgt = data_s[target]
+
+        # Normalize signals
+        ref_norm = (ref - np.mean(ref)) / (np.std(ref) + 1e-10)
+        tgt_norm = (tgt - np.mean(tgt)) / (np.std(tgt) + 1e-10)
+
+        # Compute cross-correlation
+        max_shift = int(max_shift_fraction * n)
+        correlations = []
+        shifts = range(-max_shift, max_shift + 1)
+
+        for shift in shifts:
+            if shift >= 0:
+                corr = np.sum(ref_norm[shift:] * tgt_norm[:n-shift])
+            else:
+                corr = np.sum(ref_norm[:n+shift] * tgt_norm[-shift:])
+            correlations.append(corr)
+
+        # Find optimal shift (maximum correlation)
+        best_idx = np.argmax(correlations)
+        shift_samples = shifts[best_idx]
+
+    elif method == "landmarks":
+        # Align based on physiological landmarks:
+        # - Peak LV pressure should coincide with minimum myocardial volume
+        # - (systole = myocardium compressed = minimum blood volume)
+        ref = data_s[reference]
+        tgt = data_s[target]
+
+        # Find peak of reference (e.g., peak LV pressure)
+        ref_peak_idx = np.argmax(ref)
+
+        # Find minimum of target (e.g., minimum myocardial volume)
+        tgt_min_idx = np.argmin(tgt)
+
+        # Shift target so its minimum aligns with reference peak
+        shift_samples = ref_peak_idx - tgt_min_idx
+
+        # Limit shift to max_shift_fraction of cycle
+        max_shift = int(max_shift_fraction * n)
+        shift_samples = np.clip(shift_samples, -max_shift, max_shift)
+
+    elif method == "manual":
+        # Manual shift specified in seconds
+        shift_samples = int(max_shift_fraction / dt)
+
+    else:
+        raise ValueError(f"Unknown alignment method: {method}")
+
+    # Apply shift to target signal (circular shift for periodic signal)
+    if shift_samples != 0:
+        data_s[target] = np.roll(data_s[target], shift_samples)
+
+        # Also shift related signals if they exist
+        if target == "vmyo" and "qmyo" in data_s:
+            data_s["qmyo"] = np.roll(data_s["qmyo"], shift_samples)
+        if target == "qlad" and "vlad" in data_s:
+            data_s["vlad"] = np.roll(data_s["vlad"], shift_samples)
+
+    print(f"Time alignment: shifted {target} by {shift_samples} samples ({shift_samples * dt * 1000:.1f} ms)")
+
+    return shift_samples
+
+
+def align_flow_to_pressure(data_s, align_method="landmarks"):
+    """Align LAD flow and myocardial volume to LV pressure.
+
+    Physiological expectation:
+    - During systole (high LV pressure): coronary flow decreases, myocardial volume decreases
+    - During diastole (low LV pressure): coronary flow increases, myocardial volume increases
+
+    Args:
+        data_s: Dictionary with smoothed data (modified in place)
+        align_method: "landmarks", "xcorr", or "none"
+
+    Returns:
+        shifts: Dictionary with shift values for each signal
+    """
+    if align_method == "none":
+        return {"vmyo": 0, "qlad": 0}
+
+    shifts = {}
+
+    # Align myocardial volume: minimum should occur near peak LV pressure
+    shifts["vmyo"] = align_data(
+        data_s,
+        method=align_method,
+        reference="pven",
+        target="vmyo",
+        max_shift_fraction=0.15
+    )
+
+    # Align LAD flow: minimum should occur near peak LV pressure (systolic compression)
+    # Use derivative of volume as reference for better flow alignment
+    shifts["qlad"] = align_data(
+        data_s,
+        method=align_method,
+        reference="pven",
+        target="qlad",
+        max_shift_fraction=0.15
+    )
+
+    return shifts
 
 
 def plot_data(animal, data):
@@ -192,30 +434,66 @@ def plot_data(animal, data):
     plt.close()
 
 
-def plot_results(animal, config, data):
+def plot_results(animal, config, data, use_pdriven=False, use_im_pump=False):
+    """Plot simulation results vs measured data.
+
+    Args:
+        animal: Animal ID
+        config: Dictionary of config per study
+        data: Dictionary of data per study
+        use_pdriven: If True, pressure-driven mode (prescribe P, fit Q+V)
+        use_im_pump: If True, intramyocardial pump model
+    """
     labels = {
         "qlad": "LAD Flow (scaled) [ml/s]",
         "pat": "Aterial Pressure [mmHg]",
         "pven": "Left-Ventricular Pressure [mmHg]",
         "vmyo": "Myocardial Volume [ml]",
     }
+
+    # Determine which model name to use for file output
+    if use_im_pump:
+        model_out = model_im_pump
+    elif use_pdriven:
+        model_out = model_pdriven
+    else:
+        model_out = model
+
     _, axs = plt.subplots(
         len(labels), len(config), figsize=(16, 9), sharex="col", sharey="row"
     )
     if len(config) == 1:
         axs = axs.reshape(-1, 1)
     for j, study in enumerate(config.keys()):
-        with open(f"results/{get_name(animal)}_{study}_{model}.json", "w") as f:
+        with open(f"results/{get_name(animal)}_{study}_{model_out}.json", "w") as f:
             json.dump(config[study], f, indent=2)
 
         ti = config[study]["boundary_conditions"][0]["bc_values"]["t"]
         datm = data[study]["s"]
 
         dats = OrderedDict()
-        dats["qlad"] = get_sim(config[study], "flow:" + n_in)
-        dats["pven"] = datm["pven"]
-        dats["pat"] = get_sim(config[study], "pressure:" + n_in)
-        _, dats["vmyo"] = get_sim_pv(config[study])
+
+        if use_im_pump:
+            # IM pump model: flow and volume are simulated, pressures are prescribed
+            q_sim, v_sim = get_sim_qv_im_pump(config[study])
+            dats["qlad"] = q_sim
+            dats["pven"] = datm["pven"]  # Prescribed (BC_IM)
+            dats["pat"] = datm["pat"]    # Prescribed (BC_AO)
+            dats["vmyo"] = v_sim
+        elif use_pdriven:
+            # Pressure-driven: flow is simulated, pressure is prescribed
+            q_sim, v_sim = get_sim_qv(config[study])
+            dats["qlad"] = q_sim
+            dats["pven"] = datm["pven"]  # Always from data
+            dats["pat"] = datm["pat"]    # Prescribed (from data)
+            dats["vmyo"] = v_sim
+        else:
+            # Flow-driven: pressure is simulated, flow is prescribed
+            p_sim, v_sim = get_sim_pv(config[study])
+            dats["qlad"] = datm["qlad"]  # Prescribed (from data)
+            dats["pven"] = datm["pven"]  # Always from data
+            dats["pat"] = p_sim
+            dats["vmyo"] = v_sim
 
         convert = {"p": Ba_to_mmHg, "v": 1.0, "q": 1.0}
 
@@ -235,7 +513,7 @@ def plot_results(animal, config, data):
                 axs[i, j].set_ylabel(labels[k])
 
     plt.tight_layout()
-    plt.savefig(f"plots/{get_name(animal)}_{model}_simulated.pdf")
+    plt.savefig(f"plots/{get_name(animal)}_{model_out}_simulated.pdf")
     plt.close()
 
 
@@ -500,7 +778,18 @@ def get_objective(ref, sim, t=None):
 
 
 # Optimizes the parameters using a least squares optimization and returns the edited config
-def optimize_zero_d(config, p0, data, verbose=0):
+def optimize_zero_d(config, p0, data, verbose=0, weight_pressure=1.0, weight_volume=1.0, node_in=None):
+    """Optimize 0D model parameters using least squares.
+
+    Args:
+        config: svZeroDSolver configuration
+        p0: Parameter dictionary with (val, min, max, map_type) tuples
+        data: Dictionary with smoothed data
+        verbose: Verbosity level
+        weight_pressure: Weight for pressure objective (default 1.0)
+        weight_volume: Weight for volume objective (default 1.0)
+        node_in: Node name for pressure extraction (default: uses global n_in)
+    """
     # grabs the references for the pressure and volume from the actual data
     pref = data["s"]["pat"]
     vref = data["s"]["vmyo"]
@@ -520,13 +809,15 @@ def optimize_zero_d(config, p0, data, verbose=0):
         if verbose:
             for val in pset:
                 print(f"{val:.1e}", end="\t")
-        t_p = [0, np.argmax(pref), -1]
-        t_v = [0, np.argmin(vref), -1]
+
         # runs the simulation ONCE and gets both pressure and volume
-        p_sim, v_sim = get_sim_pv(config)
+        p_sim, v_sim = get_sim_pv(config, node_in=node_in)
+
         # compute objective function for both the pressure and the volume
-        obj_p = get_objective(pref, p_sim)
-        obj_v = get_objective(vref, v_sim)
+        # Apply weights to each component
+        obj_p = weight_pressure * get_objective(pref, p_sim)
+        obj_v = weight_volume * get_objective(vref, v_sim)
+
         # concatenates them to return one object
         obj = np.concatenate((obj_p, obj_v))
         obj_history.append(np.linalg.norm(obj))
@@ -557,6 +848,171 @@ def optimize_zero_d(config, p0, data, verbose=0):
     return config, np.linalg.norm(res.fun), param_history, obj_history
 
 
+def optimize_zero_d_pdriven(config, p0, data, verbose=0, weight_flow=1.0, weight_volume=1.0,
+                            weight_derivative=0.0, weight_regularization=0.0, node_in=None):
+    """Optimize 0D model for pressure-driven case (prescribe P, fit Q + V).
+
+    Args:
+        config: svZeroDSolver configuration
+        p0: Parameter dictionary with (val, min, max, map_type) tuples
+        data: Dictionary with smoothed data
+        verbose: Verbosity level
+        weight_flow: Weight for flow objective (default 1.0)
+        weight_volume: Weight for volume objective (default 1.0)
+        weight_derivative: Weight for derivative matching (default 0.0, disabled)
+            Higher values penalize loss of pulsatility/oscillations
+        weight_regularization: Weight for bound regularization (default 0.0, disabled)
+            Penalizes parameters approaching their bounds, pulling toward center
+        node_in: Node name for flow extraction (default: uses global n_in)
+    """
+    # Reference data: flow and volume from measurements
+    qref = data["s"]["qlad"]
+    vref = data["s"]["vmyo"]
+
+    # Precompute reference derivatives for derivative matching
+    dqref = np.gradient(qref)
+    dvref = np.gradient(vref)
+    # Normalization factors (avoid division by zero)
+    dq_norm = np.std(dqref) + 1e-10
+    dv_norm = np.std(dvref) + 1e-10
+
+    # Precompute bound centers for regularization (in transformed space)
+    bound_centers = []
+    bound_half_widths = []
+    for _, pmin, pmax, map_type in p0.values():
+        forward_map, _ = get_param_map(map_type)
+        t_min = forward_map(pmin)
+        t_max = forward_map(pmax)
+        bound_centers.append((t_min + t_max) / 2)
+        bound_half_widths.append((t_max - t_min) / 2)
+
+    # Track parameter history for convergence plot
+    param_history = []
+    obj_history = []
+
+    def cost_function(p):
+        pset = set_params(config, p0, p)
+        param_history.append(pset.copy())
+
+        if verbose:
+            for val in pset:
+                print(f"{val:.1e}", end="\t")
+
+        # Get flow and volume from simulation
+        q_sim, v_sim = get_sim_qv(config, node_in=node_in)
+
+        # Compute objective: fit flow and volume
+        obj_q = weight_flow * get_objective(qref, q_sim)
+        obj_v = weight_volume * get_objective(vref, v_sim)
+
+        obj = np.concatenate((obj_q, obj_v))
+
+        # Derivative matching: penalize differences in signal dynamics
+        # This prevents "flat" solutions that average out oscillations
+        if weight_derivative > 0:
+            dq_sim = np.gradient(q_sim)
+            dv_sim = np.gradient(v_sim)
+
+            obj_dq = weight_derivative * (dqref - dq_sim) / dq_norm
+            obj_dv = weight_derivative * (dvref - dv_sim) / dv_norm
+
+            obj = np.concatenate((obj, obj_dq, obj_dv))
+
+        # Regularization: penalize parameters approaching bounds
+        # Uses normalized distance from center: 0 at center, 1 at bounds
+        if weight_regularization > 0:
+            reg_penalties = []
+            for i, pi in enumerate(p):
+                # Normalized distance from center (0 to 1)
+                dist = (pi - bound_centers[i]) / bound_half_widths[i]
+                # Quadratic penalty that grows toward bounds
+                reg_penalties.append(weight_regularization * dist**2)
+            obj = np.concatenate((obj, np.array(reg_penalties)))
+
+        obj_history.append(np.linalg.norm(obj))
+
+        if verbose:
+            print(f"{np.linalg.norm(obj):.1e}", end="\n")
+        return obj
+
+    initial = get_params(p0)
+    if verbose:
+        for k in p0.keys():
+            print(f"{k[1]}", end="\t")
+        print("obj", end="\n")
+
+    bounds = []
+    for param_tuple in p0.values():
+        _, pmin, pmax, map_type = param_tuple
+        forward_map, _ = get_param_map(map_type)
+        bounds.append((forward_map(pmin), forward_map(pmax)))
+
+    res = least_squares(cost_function, initial, bounds=np.array(bounds).T)
+    set_params(config, p0, res.x)
+
+    return config, np.linalg.norm(res.fun), param_history, obj_history
+
+
+def optimize_zero_d_im_pump(config, p0, data, verbose=0, weight_flow=1.0, weight_volume=1.0, node_in=None):
+    """Optimize intramyocardial pump model parameters.
+
+    The IM pump model has explicit compliance elements whose pressure determines volume.
+
+    Args:
+        config: svZeroDSolver configuration
+        p0: Parameter dictionary with (val, min, max, map_type) tuples
+        data: Dictionary with smoothed data
+        verbose: Verbosity level
+        weight_flow: Weight for flow objective (default 1.0)
+        weight_volume: Weight for volume objective (default 1.0)
+        node_in: Node name for flow extraction (default: uses n_in_im)
+    """
+    qref = data["s"]["qlad"]
+    vref = data["s"]["vmyo"]
+
+    param_history = []
+    obj_history = []
+
+    def cost_function(p):
+        pset = set_params(config, p0, p)
+        param_history.append(pset.copy())
+
+        if verbose:
+            for val in pset:
+                print(f"{val:.1e}", end="\t")
+
+        # Get flow and volume from IM pump model
+        q_sim, v_sim = get_sim_qv_im_pump(config, node_in=node_in)
+
+        # Compute objective: fit flow and volume
+        obj_q = weight_flow * get_objective(qref, q_sim)
+        obj_v = weight_volume * get_objective(vref, v_sim)
+
+        obj = np.concatenate((obj_q, obj_v))
+        obj_history.append(np.linalg.norm(obj))
+
+        if verbose:
+            print(f"{np.linalg.norm(obj):.1e}", end="\n")
+        return obj
+
+    initial = get_params(p0)
+    if verbose:
+        for k in p0.keys():
+            print(f"{k[1]}", end="\t")
+        print("obj", end="\n")
+
+    bounds = []
+    for param_tuple in p0.values():
+        _, pmin, pmax, map_type = param_tuple
+        forward_map, _ = get_param_map(map_type)
+        bounds.append((forward_map(pmin), forward_map(pmax)))
+
+    res = least_squares(cost_function, initial, bounds=np.array(bounds).T)
+    set_params(config, p0, res.x)
+
+    return config, np.linalg.norm(res.fun), param_history, obj_history
+
+
 def get_name(animal):
     return f"DSEA{animal:02d}"
 
@@ -575,53 +1031,149 @@ def read_and_smooth_data(animal, study):
     return {"o": data_o, "s": data_s}
 
 
-def estimate(data, animal, study, verb=0):
+def estimate(data, animal, study, verb=0, use_wk_model=False, use_pdriven=False, use_im_pump=False,
+              weight_pressure=1.0, weight_volume=1.0, weight_flow=1.0, weight_derivative=0.0,
+              weight_regularization=1.0):
+    """Estimate coronary model parameters.
+
+    Args:
+        data: Dictionary with smoothed data
+        animal: Animal ID
+        study: Study name
+        verb: Verbosity level
+        use_wk_model: If True, use model with inlet Windkessel for pressure pulsatility
+        use_pdriven: If True, prescribe aortic pressure and fit flow + volume
+        use_im_pump: If True, use intramyocardial pump model with explicit compliances
+        weight_pressure: Weight for pressure in objective function (flow-driven)
+        weight_volume: Weight for volume in objective function
+        weight_flow: Weight for flow in objective function (pressure-driven)
+        weight_derivative: Weight for derivative matching (pressure-driven)
+            Penalizes loss of pulsatility/oscillations in fitted curves
+        weight_regularization: Weight for bound regularization (pressure-driven)
+            Penalizes parameters approaching their bounds
+    """
     # create 0D model
-    config = read_config(f"models/{model}.json")
+    if use_im_pump:
+        model_name = model_im_pump
+    elif use_pdriven:
+        model_name = model_pdriven
+    elif use_wk_model:
+        model_name = model_wk
+    else:
+        model_name = model
+
+    config = read_config(f"models/{model_name}.json")
     config[str_param][str_time] = len(data["s"]["t"])
 
-    # set boundary conditions
+    # set boundary conditions based on model type
     pini = {}
-    pini[("BC_AT", "t")] = (data["s"]["t"].tolist(), None, None, "lin")
-    pini[("BC_AT", "Q")] = (data["s"]["qlad"].tolist(), None, None, "lin")
-    pini[("BC_COR", "t")] = (data["s"]["t"].tolist(), None, None, "lin")
-    pini[("BC_COR", "Pim")] = (data["s"]["pven"].tolist(), None, None, "lin")
 
-    # set timing constants
-    # t_v_min, t_v_dia = get_sys_dia(data)
-    t = data["o"]["t"]
-    V = data["o"]["vmyo"]
-    t_v_min = t[np.argmin(V)]
-    t_v_dia = t_v_min
-    print(f"t_v_min: {t_v_min:.3f}, t_v_dia: {t_v_dia:.3f}")
-    # pdb.set_trace()
-    pini[("BC_COR", "T_vc")] = (t_v_min, None, None, "lin")
-    pini[("BC_COR", "T_vr")] = (t_v_dia, None, None, "lin")
+    if use_im_pump:
+        # IM pump model: prescribe aortic pressure at inlet, Pim at outlet
+        pini[("BC_AO", "t")] = (data["s"]["t"].tolist(), None, None, "lin")
+        pini[("BC_AO", "P")] = (data["s"]["pat"].tolist(), None, None, "lin")
+        pini[("BC_IM", "t")] = (data["s"]["t"].tolist(), None, None, "lin")
+        # Outlet pressure = intramyocardial pressure (scaled from LV pressure)
+        # The Pim acts as a "pump" - high during systole, low during diastole
+        pini[("BC_IM", "P")] = (data["s"]["pven"].tolist(), None, None, "lin")
+    else:
+        pini[("BC_AT", "t")] = (data["s"]["t"].tolist(), None, None, "lin")
+
+        if use_pdriven:
+            # Prescribe aortic pressure (measured)
+            pini[("BC_AT", "P")] = (data["s"]["pat"].tolist(), None, None, "lin")
+        else:
+            # Prescribe LAD flow (measured)
+            pini[("BC_AT", "Q")] = (data["s"]["qlad"].tolist(), None, None, "lin")
+
+        pini[("BC_COR", "t")] = (data["s"]["t"].tolist(), None, None, "lin")
+        pini[("BC_COR", "Pim")] = (data["s"]["pven"].tolist(), None, None, "lin")
+
+        # set timing constants for CORONARY BC
+        t = data["o"]["t"]
+        V = data["o"]["vmyo"]
+        t_v_min = t[np.argmin(V)]
+        t_v_dia = t_v_min
+        print(f"t_v_min: {t_v_min:.3f}, t_v_dia: {t_v_dia:.3f}")
+        pini[("BC_COR", "T_vc")] = (t_v_min, None, None, "lin")
+        pini[("BC_COR", "T_vr")] = (t_v_dia, None, None, "lin")
 
     set_params(config, pini)
 
     # set initial values (val, min, max, map_type)
     # map_type can be 'log' (logarithmic) or 'linear'
-    # We optimize resistances and time constants directly
-    # Ra2 parameterization: Ra2 (geometric mean) and ratio_Ra2 (max/min)
-    #   Ra2_min = Ra2 / sqrt(ratio_Ra2)
-    #   Ra2_max = Ra2 * sqrt(ratio_Ra2)
     p0 = OrderedDict()
-    p0[("BC_COR", "Ra1")] = (1e6, 1e5, 1e8, "log")
-    p0[("BC_COR", "Rv1")] = (1e5, 1e3, 1e6, "log")
-    p0[("BC_COR", "Ra2")] = (1e6, 1e5, 1e8, "log")  # geometric mean
-    p0[("BC_COR", "ratio_Ra2")] = (1.5, 1.0, 5.0, "lin")  # max/min ratio (must be >= 1)
-    # Time constants: tc1 = Ra1 * Ca, tc2 = Rv1 * Cc
-    p0[("BC_COR", "tc1")] = (0.05, 0.005, 0.5, "lin")  # wider range for robustness
-    p0[("BC_COR", "tc2")] = (0.01, 0.01, 0.5, "lin")
+
+    if use_im_pump:
+        # Intramyocardial pump model parameters
+        # R_epi: epicardial resistance (proximal)
+        # C_art: arterial compliance (epicardial)
+        # R_im: intramyocardial resistance (varies with compression)
+        # C_im: intramyocardial compliance (main blood storage)
+        # R_ven: venous resistance (distal)
+        # Note: Compliance bounds widened to allow larger volume storage
+        # V ~ C * P, with P ~ 80000 Ba and V ~ 0.1 ml, need C ~ 1e-6
+        p0[("R_epi", "R_poiseuille")] = (1e5, 1e3, 1e7, "log")
+        p0[("C_art", "C")] = (1e-6, 1e-9, 1e-3, "log")
+        p0[("R_im", "R_poiseuille")] = (1e6, 1e4, 1e8, "log")
+        p0[("C_im", "C")] = (1e-5, 1e-8, 1e-2, "log")
+        p0[("R_ven", "R_poiseuille")] = (1e5, 1e3, 1e7, "log")
+    elif use_wk_model:
+        # Inlet Windkessel parameters for aortic pressure pulsatility
+        p0[("R_ao", "R_poiseuille")] = (1e4, 1e3, 1e6, "log")
+        p0[("R_ao", "C")] = (1e-6, 1e-8, 1e-4, "log")
+        # Coronary BC parameters
+        p0[("BC_COR", "Ra1")] = (1e6, 1e4, 1e8, "log")
+        p0[("BC_COR", "Rv1")] = (1e5, 1e3, 1e7, "log")
+        p0[("BC_COR", "Ra2")] = (1e6, 1e4, 1e8, "log")
+        p0[("BC_COR", "_ratio_Ra2")] = (2.0, 1.2, 10.0, "lin")
+        p0[("BC_COR", "tc1")] = (0.05, 0.001, 1.0, "lin")
+        p0[("BC_COR", "tc2")] = (0.05, 0.001, 1.0, "lin")
+    else:
+        # Standard coronary model parameters
+        p0[("BC_COR", "Ra1")] = (1e7, 1e6, 1e8, "log")
+        p0[("BC_COR", "Rv1")] = (1e6, 1e5, 1e7, "log")
+        p0[("BC_COR", "Ra2")] = (1e7, 1e6, 1e8, "log")
+        p0[("BC_COR", "_ratio_Ra2")] = (2.0, 1.0, 4.0, "lin")
+        p0[("BC_COR", "tc1")] = (0.05, 0.01, 0.5, "lin")
+        p0[("BC_COR", "tc2")] = (0.05, 0.01, 0.5, "lin")
+
     set_params(config, p0)
 
-    # Use global optimization (differential evolution + local refinement)
-    config_opt, err, param_history, obj_history = optimize_zero_d(
-        config, p0, data, verbose=verb
-    )
-    # print_params(config_opt, p0)
-    # plot_convergence(animal, study, p0, param_history, obj_history)
+    # Determine which node to read from
+    if use_im_pump:
+        node_in = n_in_im
+    elif use_wk_model:
+        node_in = n_in_wk
+    else:
+        node_in = n_in
+
+    if use_im_pump:
+        # IM pump model: fit flow + volume
+        config_opt, err, param_history, obj_history = optimize_zero_d_im_pump(
+            config, p0, data, verbose=verb,
+            weight_flow=weight_flow,
+            weight_volume=weight_volume,
+            node_in=node_in
+        )
+    elif use_pdriven:
+        # Pressure-driven: fit flow + volume
+        config_opt, err, param_history, obj_history = optimize_zero_d_pdriven(
+            config, p0, data, verbose=verb,
+            weight_flow=weight_flow,
+            weight_volume=weight_volume,
+            weight_derivative=weight_derivative,
+            weight_regularization=weight_regularization,
+            node_in=node_in
+        )
+    else:
+        # Flow-driven: fit pressure + volume
+        config_opt, err, param_history, obj_history = optimize_zero_d(
+            config, p0, data, verbose=verb,
+            weight_pressure=weight_pressure,
+            weight_volume=weight_volume,
+            node_in=node_in
+        )
 
     return config_opt, p0, err
 
@@ -629,6 +1181,7 @@ def estimate(data, animal, study, verb=0):
 def main():
     # animals = [8]  # initial
     animals = [8, 10, 15, 16]  # clean
+    # animals = [15]  # test problem case
     # animals = [6, 7, 8, 10, 14, 15, 16] # all
     studies = [
         "baseline",
@@ -638,11 +1191,41 @@ def main():
         "mod_sten_dob",
     ]
 
+    # Configuration options
+    # Model selection (choose ONE):
+    #   use_im_pump=True: Intramyocardial pump model with explicit compliances
+    #   use_pdriven=True: Prescribe aortic pressure, fit flow + volume
+    #   use_wk_model=True: Add inlet Windkessel for pressure pulsatility
+    #   All False: Original model (prescribe flow, fit pressure + volume)
+    use_im_pump = False
+    use_pdriven = True   # Pressure-driven with CORONARY_VAR_RES BC
+    use_wk_model = False
+
+    # Time alignment options
+    # align_method: "landmarks", "xcorr", or "none"
+    align_method = "xcorr"
+
+    # Objective weights
+    weight_pressure = 1.0
+    weight_volume = 1.0
+    weight_flow = 1.0
+    weight_derivative = 0.0  # Derivative matching to preserve pulsatility (try 0.1-1.0)
+    weight_regularization = 1.0  # Pulls parameters toward center of bounds (try 0.5-2.0)
+
     # Collect optimized parameters from all animals
     all_animals_optimized = {}
 
     for animal in animals:
-        optimized = process(animal, studies)
+        optimized = process(animal, studies,
+                          use_wk_model=use_wk_model,
+                          use_pdriven=use_pdriven,
+                          use_im_pump=use_im_pump,
+                          align_method=align_method,
+                          weight_pressure=weight_pressure,
+                          weight_volume=weight_volume,
+                          weight_flow=weight_flow,
+                          weight_derivative=weight_derivative,
+                          weight_regularization=weight_regularization)
         if optimized:
             all_animals_optimized[animal] = optimized
 
@@ -651,7 +1234,24 @@ def main():
         plot_parameters_multi(all_animals_optimized, studies)
 
 
-def process(animal, studies):
+def process(animal, studies, use_wk_model=False, use_pdriven=False, use_im_pump=False,
+            align_method="none", weight_pressure=1.0, weight_volume=1.0, weight_flow=1.0,
+            weight_derivative=0.0, weight_regularization=0.0):
+    """Process all studies for an animal.
+
+    Args:
+        animal: Animal ID
+        studies: List of study names
+        use_wk_model: If True, use Windkessel inlet model
+        use_pdriven: If True, prescribe aortic pressure and fit flow + volume
+        use_im_pump: If True, use intramyocardial pump model
+        align_method: Time alignment method ("landmarks", "xcorr", or "none")
+        weight_pressure: Weight for pressure objective
+        weight_volume: Weight for volume objective
+        weight_flow: Weight for flow objective (pressure-driven mode)
+        weight_derivative: Weight for derivative matching (pressure-driven mode)
+        weight_regularization: Weight for bound regularization (pressure-driven mode)
+    """
     optimized = defaultdict(dict)
     data = {}
     config = {}
@@ -661,12 +1261,27 @@ def process(animal, studies):
         dat = read_and_smooth_data(animal, study)
         if dat != {}:
             data[study] = dat
+            # Apply time alignment if requested
+            if align_method != "none":
+                print(f"Aligning data for {study}...")
+                align_flow_to_pressure(dat["s"], align_method=align_method)
+                pdb.set_trace()
 
     plot_data(animal, data)
 
     for study in data.keys():
         print(f"Estimating {study}...")
-        config[study], p0, err = estimate(data[study], animal, study, verb=1)
+        config[study], p0, err = estimate(
+            data[study], animal, study, verb=1,
+            use_wk_model=use_wk_model,
+            use_pdriven=use_pdriven,
+            use_im_pump=use_im_pump,
+            weight_pressure=weight_pressure,
+            weight_volume=weight_volume,
+            weight_flow=weight_flow,
+            weight_derivative=weight_derivative,
+            weight_regularization=weight_regularization
+        )
 
         # Extract optimized parameters from p0 (resistances and time constants)
         params = [opt[0] for opt in p0]
@@ -695,14 +1310,14 @@ def process(animal, studies):
                     optimized[study][("BC_COR", "Cc")] = bc["bc_values"]["Cc"]
 
         # Compute derived parameters for tracking/plotting
-        # Ra2 (geometric mean) and ratio_Ra2 from Ra2_min and Ra2_max
+        # Ra2 (geometric mean) and _ratio_Ra2 from Ra2_min and Ra2_max
         if ("BC_COR", "Ra2_min") in optimized[study] and ("BC_COR", "Ra2_max") in optimized[study]:
             Ra2_min = optimized[study][("BC_COR", "Ra2_min")]
             Ra2_max = optimized[study][("BC_COR", "Ra2_max")]
             Ra2 = np.sqrt(Ra2_min * Ra2_max)  # geometric mean
-            ratio_Ra2 = Ra2_max / Ra2_min
+            _ratio_Ra2 = Ra2_max / Ra2_min
             optimized[study][("BC_COR", "Ra2")] = Ra2
-            optimized[study][("BC_COR", "ratio_Ra2")] = ratio_Ra2
+            optimized[study][("BC_COR", "_ratio_Ra2")] = _ratio_Ra2
 
         # Time constants from R and C values
         if ("BC_COR", "Ra1") in optimized[study] and ("BC_COR", "Ca") in optimized[study]:
@@ -715,7 +1330,7 @@ def process(animal, studies):
 
         optimized[study][("global", "residual")] = err
 
-    plot_results(animal, config, data)
+    plot_results(animal, config, data, use_pdriven=use_pdriven, use_im_pump=use_im_pump)
     plot_parameters(animal, optimized)
 
     return dict(optimized)

@@ -54,7 +54,7 @@ def set_params(config, p, x=None):
     # Store parameter values for later computation of capacitances from time constants
     param_values = {}
     time_constants = {}
-    ra2_params = {}  # Store Ra2 and ratio_Ra2 for later computation
+    ra2_params = {}  # Store Ra2 and _ratio_Ra2 for later computation
 
     # Loops through all the parameters in the dict p
     for i, (id, k) in enumerate(p.keys()):
@@ -76,8 +76,8 @@ def set_params(config, p, x=None):
         # Check if this is a time constant (starts with 'tc' or 'tau')
         if k.startswith('tc') or k.startswith('tau'):
             time_constants[(id, k)] = pval
-        # Check if this is Ra2 or ratio_Ra2 (internal parameters)
-        elif k == 'Ra2' or k == 'ratio_Ra2':
+        # Check if this is Ra2 or _ratio_Ra2 (internal parameters)
+        elif k == 'Ra2' or k == '_ratio_Ra2':
             ra2_params[(id, k)] = pval
         else:
             # sets the parameter specifically checks if they are boundary conditions or vessel parameters
@@ -99,16 +99,16 @@ def set_params(config, p, x=None):
                     if vs["vessel_name"] == id:
                         vs[str_val][k] = pval
 
-    # Compute Ra2_min and Ra2_max from Ra2 and ratio_Ra2
+    # Compute Ra2_min and Ra2_max from Ra2 and _ratio_Ra2
     # Ra2 = geometric mean = sqrt(Ra2_min * Ra2_max)
-    # ratio_Ra2 = Ra2_max / Ra2_min
-    # => Ra2_min = Ra2 / sqrt(ratio_Ra2)
-    # => Ra2_max = Ra2 * sqrt(ratio_Ra2)
+    # _ratio_Ra2 = Ra2_max / Ra2_min
+    # => Ra2_min = Ra2 / sqrt(_ratio_Ra2)
+    # => Ra2_max = Ra2 * sqrt(_ratio_Ra2)
     for id in set([id for (id, k) in ra2_params.keys()]):
-        if (id, 'Ra2') in ra2_params and (id, 'ratio_Ra2') in ra2_params:
+        if (id, 'Ra2') in ra2_params and (id, '_ratio_Ra2') in ra2_params:
             Ra2 = ra2_params[(id, 'Ra2')]
-            ratio_Ra2 = ra2_params[(id, 'ratio_Ra2')]
-            sqrt_ratio = np.sqrt(ratio_Ra2)
+            _ratio_Ra2 = ra2_params[(id, '_ratio_Ra2')]
+            sqrt_ratio = np.sqrt(_ratio_Ra2)
 
             Ra2_min = Ra2 / sqrt_ratio
             Ra2_max = Ra2 * sqrt_ratio
@@ -162,7 +162,7 @@ def get_params(p):
 
 def convert_units(k, val, units):
     unit = ""
-    if "ratio" in k:
+    if k[0] == "_":
         name = "Ratio"
         valu = val
         unit = "-"
