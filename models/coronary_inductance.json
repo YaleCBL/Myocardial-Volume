@@ -1,0 +1,49 @@
+{
+    "boundary_conditions": [
+        {
+            "bc_name": "BC_AT",
+            "bc_type": "PRESSURE",
+            "bc_values": {
+                "P": [0.0, 0.0],
+                "t": [0.0, 1.0]
+            }
+        },
+        {
+            "bc_name": "BC_COR",
+            "bc_type": "CORONARY",
+            "bc_values": {
+                "t": [0.0, 1.0],
+                "Pim": [0.0, 0.0],
+                "Ca": 1e-7,
+                "Cc": 1e-6,
+                "Ra1": 1e6,
+                "Ra2": 1e6,
+                "Rv1": 1e5,
+                "P_v": 0.0
+            }
+        }
+    ],
+    "vessels": [
+        {
+            "vessel_id": 0,
+            "vessel_name": "BV_prox",
+            "vessel_length": 1.0,
+            "zero_d_element_type": "BloodVessel",
+            "zero_d_element_values": {
+                "R_poiseuille": 0.0,
+                "L": 0.0,
+                "C": 0.0
+            },
+            "boundary_conditions": {
+                "inlet": "BC_AT",
+                "outlet": "BC_COR"
+            }
+        }
+    ],
+    "simulation_parameters": {
+        "number_of_cardiac_cycles": 30,
+        "number_of_time_pts_per_cardiac_cycle": 201,
+        "output_all_cycles": false,
+        "output_variable_based": true
+    }
+}

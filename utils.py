@@ -55,6 +55,10 @@ def set_params(config, p, x=None):
     param_values = {}
     time_constants = {}
     ra2_params = {}  # Store Ra2 and _ratio_Ra2 for later computation
+    pim_scale = None  # Store Pim scale factor (CEP component)
+    pim_dpdt = None   # Store dP/dt scale factor (VE component)
+    pim_base = None   # Store base Pim values (LVP)
+    pim_dpdt_base = None  # Store base dP/dt values
 
     # Loops through all the parameters in the dict p
     for i, (id, k) in enumerate(p.keys()):
@@ -79,6 +83,20 @@ def set_params(config, p, x=None):
         # Check if this is Ra2 or _ratio_Ra2 (internal parameters)
         elif k == 'Ra2' or k == '_ratio_Ra2':
             ra2_params[(id, k)] = pval
+        # Check if this is a Pim scaling factor (CEP component)
+        elif k == '_Pim_scale':
+            pim_scale = pval
+            # Get base Pim values from stored "_Pim_base" key
+            for bc in config[str_bc]:
+                if bc["bc_name"] == id and "_Pim_base" in bc["bc_values"]:
+                    pim_base = np.array(bc["bc_values"]["_Pim_base"])
+        # Check if this is a dP/dt scaling factor (VE component)
+        elif k == '_Pim_dpdt':
+            pim_dpdt = pval
+            # Get base dP/dt values
+            for bc in config[str_bc]:
+                if bc["bc_name"] == id and "_Pim_dpdt_base" in bc["bc_values"]:
+                    pim_dpdt_base = np.array(bc["bc_values"]["_Pim_dpdt_base"])
         else:
             # sets the parameter specifically checks if they are boundary conditions or vessel parameters
             if "BC" in id:
@@ -138,6 +156,38 @@ def set_params(config, p, x=None):
                 for bc in config[str_bc]:
                     if bc["bc_name"] == id:
                         bc["bc_values"]['Cc'] = Cc
+
+    # Apply Pim modifications based on intramyocardial pump literature:
+    # Pim = _Pim_scale × LVP + _Pim_dpdt × dLVP/dt
+    #
+    # CEP (Cavity-induced Extracellular Pressure): _Pim_scale × LVP
+    #   - Transmission of LV pressure through myocardium
+    #   - Varies transmurally (endo ≈ LVP, epi ≈ 0)
+    #
+    # VE (Varying Elastance): _Pim_dpdt × dLVP/dt
+    #   - Myocardial stiffness during contraction
+    #   - Peaks BEFORE LV pressure, causing early systolic flow impediment
+    #   - Reference: Kerckhoffs et al. 2010, van den Broek et al. 2022
+    if pim_base is not None:
+        pim_modified = np.zeros_like(pim_base)
+
+        # CEP component: scaled LV pressure
+        if pim_scale is not None:
+            pim_modified += pim_scale * pim_base
+
+        # VE component: scaled dP/dt (early activation)
+        if pim_dpdt is not None and pim_dpdt_base is not None:
+            pim_modified += pim_dpdt * pim_dpdt_base
+
+        # Store modified Pim in config
+        for bc in config[str_bc]:
+            # For CORONARY BC: update Pim field
+            if "Pim" in bc.get("bc_values", {}):
+                bc["bc_values"]["Pim"] = pim_modified.tolist()
+            # For backpressure model BC_PIM: update P field directly
+            if bc["bc_name"] == "BC_PIM" and "_Pim_base" in bc.get("bc_values", {}):
+                bc["bc_values"]["P"] = pim_modified.tolist()
+
     return out
 
 

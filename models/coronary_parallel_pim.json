@@ -1,0 +1,93 @@
+{
+    "simulation_parameters": {
+        "number_of_cardiac_cycles": 30,
+        "number_of_time_pts_per_cardiac_cycle": 201,
+        "output_all_cycles": false,
+        "output_variable_based": true
+    },
+    "boundary_conditions": [
+        {
+            "bc_name": "BC_AO",
+            "bc_type": "PRESSURE",
+            "bc_values": {
+                "P": [0.0, 0.0],
+                "t": [0.0, 1.0]
+            }
+        },
+        {
+            "bc_name": "BC_PIM",
+            "bc_type": "PRESSURE",
+            "bc_values": {
+                "P": [0.0, 0.0],
+                "t": [0.0, 1.0]
+            }
+        },
+        {
+            "bc_name": "BC_VEN",
+            "bc_type": "PRESSURE",
+            "bc_values": {
+                "P": [0.0, 0.0],
+                "t": [0.0, 1.0]
+            }
+        }
+    ],
+    "vessels": [
+        {
+            "vessel_id": 0,
+            "vessel_name": "R_prox",
+            "zero_d_element_type": "BloodVessel",
+            "zero_d_element_values": {
+                "R_poiseuille": 1e5,
+                "L": 1e3
+            },
+            "boundary_conditions": {
+                "inlet": "BC_AO"
+            }
+        },
+        {
+            "vessel_id": 1,
+            "vessel_name": "C_im",
+            "zero_d_element_type": "BloodVessel",
+            "zero_d_element_values": {
+                "R_poiseuille": 0.0,
+                "C": 1e-6
+            }
+        },
+        {
+            "vessel_id": 2,
+            "vessel_name": "R_pim",
+            "zero_d_element_type": "BloodVessel",
+            "zero_d_element_values": {
+                "R_poiseuille": 1e4
+            },
+            "boundary_conditions": {
+                "outlet": "BC_PIM"
+            }
+        },
+        {
+            "vessel_id": 3,
+            "vessel_name": "R_dist",
+            "zero_d_element_type": "BloodVessel",
+            "zero_d_element_values": {
+                "R_poiseuille": 1e5
+            },
+            "boundary_conditions": {
+                "outlet": "BC_VEN"
+            }
+        }
+    ],
+    "junctions": [
+        {
+            "junction_name": "J_main",
+            "junction_type": "NORMAL_JUNCTION",
+            "inlet_vessels": [0],
+            "outlet_vessels": [1, 2, 3]
+        },
+        {
+            "junction_name": "J_cap",
+            "junction_type": "NORMAL_JUNCTION",
+            "inlet_vessels": [1],
+            "outlet_vessels": []
+        }
+    ]
+}
