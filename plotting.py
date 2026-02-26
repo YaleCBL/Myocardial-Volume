@@ -124,11 +124,14 @@ def plot_parameters(animal, optimized, get_name_func, model_name):
     plt.close()
 
 
-def plot_parameters_multi(animals_optimized, studies, model_name):
+def plot_parameters_multi(animals_optimized, studies, model_name, unit_system="wood"):
     """Plot parameters across multiple animals, grouped by physical quantity with shared y-axes.
 
-    Uses clinical units (mmHg·s/ml for resistance, ml/mmHg for compliance) and includes
+    Uses specified unit system for resistance and compliance, and includes
     comparison with Kim et al. 2010 (doi:10.1007/s10439-010-0083-6) reference values.
+
+    Args:
+        unit_system: "wood" for Wood units (WU), "mmHg" for mmHg·s/ml
     """
     import json
 
@@ -151,7 +154,8 @@ def plot_parameters_multi(animals_optimized, studies, model_name):
     # Kim values are for total vessel territories (~10g each), our values are per gram
     # To compare: R_per_gram = R_total * territory_mass (resistances in parallel)
     #             C_per_gram = C_total / territory_mass (capacitances in parallel)
-    kim_ranges = {}
+    # Store in CGS, convert to display units later (same as our data)
+    kim_ranges_cgs = {}
     KIM_TERRITORY_MASS = 10.0  # Estimated mass of coronary territory in grams
     if kim_data:
         # Only use normal vessels (single letter keys a-k), not stenosis cases (c*, d*, etc.)
@@ -174,15 +178,8 @@ def plot_parameters_multi(animals_optimized, studies, model_name):
             # Apply paper->CGS conversion, then territory mass scaling
             values_cgs = [kim_data[v][kim_param]['R'] * paper_scale * mass_scale for v in normal_vessels if kim_param in kim_data[v]]
             if values_cgs:
-                # Convert from CGS to clinical units (same as our data)
-                values_clinical, _, _ = convert_units(our_param[0], np.array(values_cgs), "mmHg")
-                kim_ranges[our_param] = {
-                    'values': values_clinical.tolist(),  # Individual vessel values for scatter plot
-                    'mean': np.mean(values_clinical),
-                    'std': np.std(values_clinical),
-                    'min': np.min(values_clinical),
-                    'max': np.max(values_clinical),
-                }
+                # Store in CGS - will convert to display units later
+                kim_ranges_cgs[our_param] = np.array(values_cgs)
 
     # Compute derived parameters (Ra2_mean, Ra2_ratio) from Ra2_min/Ra2_max
     animals_optimized_extended = {}
@@ -278,12 +275,12 @@ def plot_parameters_multi(animals_optimized, studies, model_name):
         flat_values = [v for sublist in all_values for v in sublist]
         if flat_values:
             # Use clinical units (mmHg-based) for this plot
-            converted_flat, unit, name = convert_units(zerod, np.array(flat_values), "mmHg")
+            converted_flat, unit, name = convert_units(zerod, np.array(flat_values), unit_system)
 
             converted_values = []
             for study_values in all_values:
                 if study_values:
-                    converted = convert_units(zerod, np.array(study_values), "mmHg")[0]
+                    converted = convert_units(zerod, np.array(study_values), unit_system)[0]
                     converted_values.append(converted)
                 else:
                     converted_values.append(np.array([]))
@@ -343,7 +340,7 @@ def plot_parameters_multi(animals_optimized, studies, model_name):
         ax.grid(True, axis="y", alpha=0.3)
 
         # Check if Kim et al. data available for this parameter
-        has_kim = kim_ranges and param_name in kim_ranges
+        has_kim = kim_ranges_cgs and param_name in kim_ranges_cgs
 
         # Plot individual points for our data
         for study_idx, (converted, study_animals) in enumerate(zip(converted_values, all_animals_per_study)):
@@ -359,14 +356,18 @@ def plot_parameters_multi(animals_optimized, studies, model_name):
 
         # Add Kim et al. as additional bar with individual points
         if has_kim:
-            kim_ref = kim_ranges[param_name]
+            # Convert Kim CGS values to display units (same unit_system as our data)
+            kim_values_cgs = kim_ranges_cgs[param_name]
+            kim_values_display, _, _ = convert_units(zerod, kim_values_cgs, unit_system)
             kim_x = n_studies  # Position after all studies
             # Plot Kim bar
-            ax.bar(kim_x, kim_ref['mean'], alpha=0.3, color="gray", zorder=1)
-            ax.errorbar(kim_x, kim_ref['mean'], yerr=kim_ref['std'], fmt="none",
+            kim_mean = np.mean(kim_values_display)
+            kim_std = np.std(kim_values_display)
+            ax.bar(kim_x, kim_mean, alpha=0.3, color="gray", zorder=1)
+            ax.errorbar(kim_x, kim_mean, yerr=kim_std, fmt="none",
                        ecolor="black", capsize=3, capthick=1.5, zorder=3)
             # Plot individual Kim vessel points in black
-            for kim_val in kim_ref['values']:
+            for kim_val in kim_values_display:
                 ax.scatter(kim_x, kim_val, alpha=0.7, s=40, color='black', zorder=2)
 
         # Set x-axis labels
@@ -404,10 +405,10 @@ def plot_parameters_multi(animals_optimized, studies, model_name):
     legend_handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=animal_color_map[animal],
                                   markersize=10, label=f'DSEA{animal:02d}') for animal in animals]
     # Add Kim et al. reference to legend if data was loaded
-    if kim_ranges:
+    if kim_ranges_cgs:
         legend_handles.append(plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='black',
                                           markersize=10, label='Kim et al. 2010'))
-    fig.legend(handles=legend_handles, loc='upper center', ncol=len(animals) + (1 if kim_ranges else 0),
+    fig.legend(handles=legend_handles, loc='upper center', ncol=len(animals) + (1 if kim_ranges_cgs else 0),
                bbox_to_anchor=(0.5, 1.02), frameon=True, fontsize=10)
 
     plt.tight_layout()

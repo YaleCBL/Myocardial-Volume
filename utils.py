@@ -253,6 +253,18 @@ def convert_units(k, val, units):
         elif k == "P":
             valu = val * Ba_to_mmHg
             unit = "mmHg"
+    elif units == "wood":
+        # Wood units: 1 WU = 1 mmHg·min/L
+        # R_wood = R_cgs * Ba_to_mmHg * (1000 ml/L) / (60 s/min)
+        if k == "R":
+            valu = val * Ba_to_mmHg * 1000 / 60
+            unit = "WU"
+        elif k == "C":
+            valu = val * 1 / Ba_to_mmHg
+            unit = "ml/mmHg"
+        elif k == "P":
+            valu = val * Ba_to_mmHg
+            unit = "mmHg"
     elif units == "paper":
         if k == "R":
             valu = val * 1e-3
