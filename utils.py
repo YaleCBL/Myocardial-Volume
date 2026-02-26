@@ -188,7 +188,7 @@ def set_params(config, p, x=None):
             if bc["bc_name"] == "BC_PIM" and "_Pim_base" in bc.get("bc_values", {}):
                 bc["bc_values"]["P"] = pim_modified.tolist()
 
-    return out
+    return out, param_values
 
 
 # Map parameters to optimization space using the specified mapping (log or linear)
