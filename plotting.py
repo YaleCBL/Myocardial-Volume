@@ -3,9 +3,23 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator
 from collections import OrderedDict, defaultdict
 
 from utils import Ba_to_mmHg, convert_units, units
+
+# Configure matplotlib for LaTeX rendering
+plt.rcParams.update({
+    'text.usetex': True,
+    'font.family': 'serif',
+    'font.serif': ['Computer Modern Roman'],
+    'axes.labelsize': 12,
+    'font.size': 12,
+    'legend.fontsize': 10,
+    'xtick.labelsize': 10,
+    'ytick.labelsize': 10,
+    'axes.titlesize': 12,
+})
 
 
 def plot_data(animal, data, get_name_func):
@@ -34,7 +48,7 @@ def plot_data(animal, data, get_name_func):
             ax[j, i].set_xlabel("Time [s]")
 
         for k in ["o", "s"]:
-            vol = data[s][k]["vmyo"]
+            vol = data[s][k]["vmyo"].copy()
             vol -= vol[0]
             ax[1, i].plot(
                 data[s][k]["t"],
@@ -729,7 +743,7 @@ def plot_volume_metrics(all_volume_metrics, studies, model_name):
     metric_groups = [
         ("Volume Changes\n(ratio to baseline)", ["dV_total", "dV_a", "dV_c"], False, None),
         ("Inlet (Ra1)\n[ml/cycle/g]", ["V_in_forward", "V_in_backflow", "Q_in_net"], True, "volume"),
-        ("Mid (Ra2)\n[ml/cycle/g]", ["V_Ra2_forward", "V_Ra2_backflow", "Q_Ra2_net"], True, "volume"),
+        ("Intramyocardial\n[ml/cycle/g]", ["V_im_forward", "V_im_backflow", "Q_im_net"], True, "volume"),
         ("Venous (Rv1)\n[ml/cycle/g]", ["V_Rv1_forward", "V_Rv1_backflow", "Q_Rv1_net"], True, "volume"),
     ]
 
@@ -841,8 +855,16 @@ def plot_volume_metrics(all_volume_metrics, studies, model_name):
             if share_y_group is not None and share_y_group in shared_y_limits:
                 ax.set_ylim(shared_y_limits[share_y_group])
 
+            # Set y-axis tick increments
+            if use_absolute:
+                ax.yaxis.set_major_locator(MultipleLocator(0.05))
+            else:
+                ax.yaxis.set_major_locator(MultipleLocator(0.5))
+
             ax.set_xticks(range(n_studies))
-            ax.set_xticklabels([s.replace('_', '\n') for s in studies], rotation=0, fontsize=8)
+            # Escape underscores for LaTeX and use newlines
+            ax.set_xticklabels([s.replace('_', ' ').replace(' ', '\n') for s in studies], rotation=0, fontsize=8)
+            # Format title for LaTeX (replace underscores with spaces)
             ax.set_title(metric.replace('_', ' '), fontsize=10)
             ax.grid(True, axis="y", alpha=0.3)
 
@@ -856,9 +878,9 @@ def plot_volume_metrics(all_volume_metrics, studies, model_name):
 
     # Add global legend at top of figure
     legend_handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=animal_color_map[animal],
-                                  markersize=10, label=f'DSEA{animal:02d}') for animal in animals]
+                                  markersize=10, label=r'DSEA{:02d}'.format(animal)) for animal in animals]
     legend_handles.append(plt.Line2D([0], [0], color='red', linestyle='--', linewidth=1.5,
-                                      label='Baseline (1.0)'))
+                                      label=r'Baseline (1.0)'))
     fig.legend(handles=legend_handles, loc='upper center', ncol=len(animals) + 1,
                bbox_to_anchor=(0.5, 1.02), frameon=True, fontsize=10)
 
@@ -870,6 +892,157 @@ def plot_volume_metrics(all_volume_metrics, studies, model_name):
 
     # Print statistics tables
     _print_volume_metrics_tables(all_volume_metrics, studies, metric_groups)
+
+
+def plot_volume_balance(all_volume_metrics, studies, model_name):
+    """Plot volume balance showing arterial inflow vs venous backflow contribution.
+
+    Creates a stacked bar chart highlighting that intramyocardial filling comes from:
+    - Small arterial inlet flow (V_in_forward)
+    - Large venous backflow (V_Rv1_backflow)
+
+    Args:
+        all_volume_metrics: Dict of {animal: {study: {metric: value}}}
+        studies: List of study names
+        model_name: Model name for output filename
+    """
+    if "baseline" not in studies:
+        print("Cannot plot volume balance: 'baseline' not in studies")
+        return
+
+    # Collect animals with baseline
+    animals = sorted([a for a in all_volume_metrics if "baseline" in all_volume_metrics[a]])
+    if not animals:
+        print("No animals with baseline data found")
+        return
+
+    n_studies = len(studies)
+
+    # Font sizes (1.5x larger than default)
+    fs_title = 18
+    fs_label = 18
+    fs_tick = 15
+    fs_legend = 15
+    fs_bar_label = 15
+
+    # Create figure with two rows: absolute values and percentages
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8))
+
+    # Colors for the two sources
+    color_arterial = '#E74C3C'  # Red for arterial
+    color_venous = '#3498DB'    # Blue for venous
+
+    # Collect data for each study
+    arterial_means, arterial_stds = [], []
+    venous_means, venous_stds = [], []
+    total_means, total_stds = [], []
+
+    for study in studies:
+        arterial_vals = []
+        venous_vals = []
+        total_vals = []
+
+        for animal in animals:
+            if study not in all_volume_metrics[animal]:
+                continue
+            metrics = all_volume_metrics[animal][study]
+
+            if 'V_in_forward' in metrics and 'V_Rv1_backflow' in metrics and 'V_im_forward' in metrics:
+                arterial_vals.append(metrics['V_in_forward'])
+                venous_vals.append(metrics['V_Rv1_backflow'])
+                total_vals.append(metrics['V_im_forward'])
+
+        if arterial_vals:
+            arterial_means.append(np.mean(arterial_vals))
+            arterial_stds.append(np.std(arterial_vals))
+            venous_means.append(np.mean(venous_vals))
+            venous_stds.append(np.std(venous_vals))
+            total_means.append(np.mean(total_vals))
+            total_stds.append(np.std(total_vals))
+        else:
+            arterial_means.append(0)
+            arterial_stds.append(0)
+            venous_means.append(0)
+            venous_stds.append(0)
+            total_means.append(0)
+            total_stds.append(0)
+
+    arterial_means = np.array(arterial_means)
+    venous_means = np.array(venous_means)
+    total_means = np.array(total_means)
+
+    x = np.arange(n_studies)
+    width = 0.6
+
+    # Format study names: capitalize and expand abbreviations
+    def format_study_name(s):
+        s = s.replace('_', ' ')
+        s = s.replace('mild sten', 'Mild Stenosis')
+        s = s.replace('mod sten', 'Moderate Stenosis')
+        s = s.replace('dob', 'Dobutamine')
+        s = s.replace('baseline', 'Baseline')
+        # Add line breaks between each word
+        s = s.replace(' ', '\n')
+        return s
+
+    study_labels = [format_study_name(s) for s in studies]
+
+    # Top plot: Absolute values (stacked bar)
+    ax1 = axes[0]
+    bars1 = ax1.bar(x, arterial_means, width, label=r'Arterial Inlet',
+                    color=color_arterial, edgecolor='white', linewidth=0.5)
+    bars2 = ax1.bar(x, venous_means, width, bottom=arterial_means,
+                    label=r'Venous Backflow',
+                    color=color_venous, edgecolor='white', linewidth=0.5)
+
+    ax1.set_ylabel(r'Volume [ml/cycle/g]', fontsize=fs_label)
+    ax1.set_title(r'\textbf{Volume Sources for Intramyocardial Filling}', fontsize=fs_title)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(study_labels, fontsize=fs_tick)
+    ax1.tick_params(axis='y', labelsize=fs_tick)
+    ax1.legend(loc='center left', bbox_to_anchor=(1.02, 0.5), framealpha=0.9, fontsize=fs_legend)
+    ax1.yaxis.set_major_locator(MultipleLocator(0.05))
+    ax1.grid(True, axis='y', alpha=0.3)
+    ax1.set_ylim(bottom=0)
+
+    # Bottom plot: Percentage contribution
+    ax2 = axes[1]
+
+    # Calculate percentages
+    sum_sources = arterial_means + venous_means
+    arterial_pct = np.where(sum_sources > 0, 100 * arterial_means / sum_sources, 0)
+    venous_pct = np.where(sum_sources > 0, 100 * venous_means / sum_sources, 0)
+
+    bars3 = ax2.bar(x, arterial_pct, width, label=r'Arterial Inlet',
+                    color=color_arterial, edgecolor='white', linewidth=0.5)
+    bars4 = ax2.bar(x, venous_pct, width, bottom=arterial_pct,
+                    label=r'Venous Backflow',
+                    color=color_venous, edgecolor='white', linewidth=0.5)
+
+    # Add percentage labels on bars
+    for i, (a_pct, v_pct) in enumerate(zip(arterial_pct, venous_pct)):
+        if a_pct > 5:
+            ax2.text(i, a_pct/2, f'{a_pct:.0f}\\%', ha='center', va='center',
+                    fontsize=fs_bar_label, fontweight='bold', color='white')
+        if v_pct > 5:
+            ax2.text(i, a_pct + v_pct/2, f'{v_pct:.0f}\\%', ha='center', va='center',
+                    fontsize=fs_bar_label, fontweight='bold', color='white')
+
+    ax2.set_ylabel(r'Contribution [\%]', fontsize=fs_label)
+    ax2.set_title(r'\textbf{Relative Contribution to Intramyocardial Filling}', fontsize=fs_title)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(study_labels, fontsize=fs_tick)
+    ax2.tick_params(axis='y', labelsize=fs_tick)
+    ax2.set_ylim(0, 100)
+    ax2.yaxis.set_major_locator(MultipleLocator(20))
+    ax2.grid(True, axis='y', alpha=0.3)
+    ax2.legend(loc='center left', bbox_to_anchor=(1.02, 0.5), framealpha=0.9, fontsize=fs_legend)
+
+    plt.tight_layout()
+    fig.subplots_adjust(right=0.82)  # Make room for legend on the right
+    plt.savefig(f"plots/multi_animal_{model_name}_volume_balance.pdf", bbox_inches='tight')
+    plt.close()
+    print(f"Volume balance plot saved: plots/multi_animal_{model_name}_volume_balance.pdf")
 
 
 def _print_volume_metrics_tables(all_volume_metrics, studies, metric_groups):

@@ -17,7 +17,7 @@ from optimization import optimize
 from plotting import (
     plot_data, plot_results, plot_parameters, plot_parameters_multi,
     plot_combined_results, plot_circuit_diagram, plot_parameters_normalized,
-    plot_internal_flows, plot_volume_metrics
+    plot_internal_flows, plot_volume_metrics, plot_volume_balance
 )
 
 # Model configuration
@@ -47,9 +47,9 @@ def read_data(animal, study):
     data["pat"] = df["AoP [Ba]"].to_numpy()
     data["pven"] = df["LVP [Ba]"].to_numpy()
     data["vmyo"] = df["tissue vol ischemic [ml]"].to_numpy()
-    data["qlad"] = df["LAD Flow [ml/s]"].to_numpy()
+    data["qlad"] = df["LAD Flow [ml/s]"].to_numpy().copy()
     data["qmyo"] = np.gradient(data["vmyo"], data["t"])
-    data["vlad"] = cumulative_trapezoid(data["qlad"], data["t"], initial=0)
+    data["vlad"] = cumulative_trapezoid(data["qlad"], data["t"], initial=0).copy()
 
     # Scale LAD flow using microsphere data (ml/min/g)
     # Assume tissue mass = 1 g, so we work directly in per-gram units
@@ -165,8 +165,8 @@ def setup_model(data):
     T_vr_init = np.clip(t_v_dia, 0.05, 0.6 * t_cycle)
     p0[("BC_COR", "T_vc")] = (T_vc_init, 0.05, 0.6 * t_cycle, "lin")
     p0[("BC_COR", "T_vr")] = (T_vr_init, 0.05, 0.6 * t_cycle, "lin")
-    p0[("BC_COR", "_Pim_scale")] = (1.5, 0.8, 2.5, "lin")
-    p0[("BC_COR", "_Pim_dpdt")] = (0.5, 0.0, 1.5, "lin")
+    # p0[("BC_COR", "_Pim_scale")] = (1.5, 0.8, 2.5, "lin")
+    # p0[("BC_COR", "_Pim_dpdt")] = (0.5, 0.0, 1.5, "lin")
 
     _, _ = set_params(config, p0)
 
@@ -363,27 +363,37 @@ def compute_volume_metrics(config, node_in):
 
     # Net flow over cardiac cycle (integral of flow rate)
     # Using trapezoidal integration
-    metrics['Q_in_net'] = np.trapz(flows['Q_in'], t)
-    metrics['Q_Ra2_net'] = np.trapz(flows['Q_mid'], t)
-    metrics['Q_Rv1_net'] = np.trapz(flows['Q_out'], t)
+    metrics['Q_in_net'] = np.trapezoid(flows['Q_in'], t)
+    metrics['Q_Ra2_net'] = np.trapezoid(flows['Q_mid'], t)
+    metrics['Q_Rv1_net'] = np.trapezoid(flows['Q_out'], t)
 
     # Volume from positive flow (forward volume) - integral of positive flow
     Q_in_pos = np.maximum(flows['Q_in'], 0)
     Q_Ra2_pos = np.maximum(flows['Q_mid'], 0)
     Q_Rv1_pos = np.maximum(flows['Q_out'], 0)
 
-    metrics['V_in_forward'] = np.trapz(Q_in_pos, t)
-    metrics['V_Ra2_forward'] = np.trapz(Q_Ra2_pos, t)
-    metrics['V_Rv1_forward'] = np.trapz(Q_Rv1_pos, t)
+    metrics['V_in_forward'] = np.trapezoid(Q_in_pos, t)
+    metrics['V_Ra2_forward'] = np.trapezoid(Q_Ra2_pos, t)
+    metrics['V_Rv1_forward'] = np.trapezoid(Q_Rv1_pos, t)
 
     # Volume from negative flow (backflow volume) - integral of negative flow (stored as positive)
     Q_in_neg = np.minimum(flows['Q_in'], 0)
     Q_Ra2_neg = np.minimum(flows['Q_mid'], 0)
     Q_Rv1_neg = np.minimum(flows['Q_out'], 0)
 
-    metrics['V_in_backflow'] = -np.trapz(Q_in_neg, t)  # Make positive for easier interpretation
-    metrics['V_Ra2_backflow'] = -np.trapz(Q_Ra2_neg, t)
-    metrics['V_Rv1_backflow'] = -np.trapz(Q_Rv1_neg, t)
+    metrics['V_in_backflow'] = -np.trapezoid(Q_in_neg, t)  # Make positive for easier interpretation
+    metrics['V_Ra2_backflow'] = -np.trapezoid(Q_Ra2_neg, t)
+    metrics['V_Rv1_backflow'] = -np.trapezoid(Q_Rv1_neg, t)
+
+    # Intramyocardial volume rate of change (dV_im/dt)
+    # Positive = filling, Negative = emptying
+    dVim_dt = np.gradient(V_im, dt)
+    dVim_dt_pos = np.maximum(dVim_dt, 0)
+    dVim_dt_neg = np.minimum(dVim_dt, 0)
+
+    metrics['V_im_forward'] = np.trapezoid(dVim_dt_pos, t)   # Filling volume
+    metrics['V_im_backflow'] = -np.trapezoid(dVim_dt_neg, t)  # Emptying volume (positive)
+    metrics['Q_im_net'] = np.trapezoid(dVim_dt, t)  # Net volume change (should be ~0 for periodic)
 
     # Verify: forward - backflow should equal net
     # Q_in_net = V_in_forward - V_in_backflow (this is a check)
@@ -549,6 +559,7 @@ def main():
         all_volume_metrics = compute_all_volume_metrics(all_data, all_config, NODE_IN)
         if all_volume_metrics:
             plot_volume_metrics(all_volume_metrics, studies, MODEL_NAME)
+            plot_volume_balance(all_volume_metrics, studies, MODEL_NAME)
 
     plot_circuit_diagram(MODEL_NAME)
 

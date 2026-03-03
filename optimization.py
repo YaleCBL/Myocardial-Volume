@@ -30,7 +30,7 @@ def extract_flow_features(t, q):
         "range": np.max(q) - np.min(q),
         "time_to_max": t[np.argmax(q)] - t[0],
         "time_to_min": t[np.argmin(q)] - t[0],
-        "integral": np.trapz(q, t),
+        "integral": np.trapezoid(q, t),
         "std": np.std(q),
     }
 
@@ -66,8 +66,8 @@ def extract_robust_flow_features(t, q, T_sys):
     q_mean_dia = np.mean(q[idx_dia]) if np.any(idx_dia) else q_mean
 
     # Integrals
-    sv_total = np.trapz(q, t)
-    sv_dia = np.trapz(q[idx_dia], t[idx_dia]) if np.any(idx_dia) else 0.0
+    sv_total = np.trapezoid(q, t)
+    sv_dia = np.trapezoid(q[idx_dia], t[idx_dia]) if np.any(idx_dia) else 0.0
 
     return {
         # Diastolic-to-Systolic Flow Ratio (normal LAD ~2.0, stenotic <1.5)
