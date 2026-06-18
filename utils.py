@@ -59,6 +59,10 @@ def set_params(config, p, x=None):
     pim_dpdt = None   # Store dP/dt scale factor (VE component)
     pim_base = None   # Store base Pim values (LVP)
     pim_dpdt_base = None  # Store base dP/dt values
+    pim_strain_amp = None   # Store deformation (strain) Pim amplitude
+    pim_strain_base = None  # Store base deformation signal (normalized strain)
+    pim_strain_rate = None      # Store deformation-rate (shortening-rate) amplitude
+    pim_strain_rate_base = None  # Store base deformation-rate signal (normalized)
 
     # Loops through all the parameters in the dict p
     for i, (id, k) in enumerate(p.keys()):
@@ -97,6 +101,19 @@ def set_params(config, p, x=None):
             for bc in config[str_bc]:
                 if bc["bc_name"] == id and "_Pim_dpdt_base" in bc["bc_values"]:
                     pim_dpdt_base = np.array(bc["bc_values"]["_Pim_dpdt_base"])
+        # Check if this is a deformation-driven Pim amplitude (strain model)
+        elif k == '_Pim_strain_amp':
+            pim_strain_amp = pval
+            # Get base (normalized) deformation signal
+            for bc in config[str_bc]:
+                if bc["bc_name"] == id and "_Pim_strain_base" in bc["bc_values"]:
+                    pim_strain_base = np.array(bc["bc_values"]["_Pim_strain_base"])
+        # Check if this is a deformation-rate (shortening-rate) Pim amplitude
+        elif k == '_Pim_strain_rate':
+            pim_strain_rate = pval
+            for bc in config[str_bc]:
+                if bc["bc_name"] == id and "_Pim_strain_rate_base" in bc["bc_values"]:
+                    pim_strain_rate_base = np.array(bc["bc_values"]["_Pim_strain_rate_base"])
         else:
             # sets the parameter specifically checks if they are boundary conditions or vessel parameters
             if "BC" in id:
@@ -168,18 +185,27 @@ def set_params(config, p, x=None):
     #   - Myocardial stiffness during contraction
     #   - Peaks BEFORE LV pressure, causing early systolic flow impediment
     #   - Reference: Kerckhoffs et al. 2010, van den Broek et al. 2022
-    if pim_base is not None:
-        pim_modified = np.zeros_like(pim_base)
+    # Assemble the intramyocardial pressure Pim additively from any present
+    # components. This supports LV-pressure, deformation, and hybrid drivers:
+    #   - CEP   : pim_scale * LVP                (cavity-induced, LV-pressure)
+    #   - VE    : pim_dpdt * dLVP/dt             (varying-elastance, LVP-rate)
+    #   - SIP   : pim_strain_amp * S(t)          (shortening-induced, strain)
+    #   - SIP'  : pim_strain_rate * [dS/dt]+     (shortening-rate impediment)
+    # The shortening-rate term supplies the sharp early-systolic flow impediment
+    # that strain amplitude alone misses (Krams/Westerhof varying-elastance;
+    # Algranati-Kassab-Lanir CEP+SIP decomposition).
+    components = []
+    if pim_scale is not None and pim_base is not None:
+        components.append(pim_scale * pim_base)
+    if pim_dpdt is not None and pim_dpdt_base is not None:
+        components.append(pim_dpdt * pim_dpdt_base)
+    if pim_strain_amp is not None and pim_strain_base is not None:
+        components.append(pim_strain_amp * pim_strain_base)
+    if pim_strain_rate is not None and pim_strain_rate_base is not None:
+        components.append(pim_strain_rate * pim_strain_rate_base)
 
-        # CEP component: scaled LV pressure
-        if pim_scale is not None:
-            pim_modified += pim_scale * pim_base
-
-        # VE component: scaled dP/dt (early activation)
-        if pim_dpdt is not None and pim_dpdt_base is not None:
-            pim_modified += pim_dpdt * pim_dpdt_base
-
-        # Store modified Pim in config
+    if components:
+        pim_modified = np.sum(components, axis=0)
         for bc in config[str_bc]:
             # For CORONARY BC: update Pim field
             if "Pim" in bc.get("bc_values", {}):
