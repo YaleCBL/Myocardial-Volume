@@ -8,6 +8,23 @@ from collections import OrderedDict, defaultdict
 
 from utils import Ba_to_mmHg, convert_units, units
 
+# ---------------------------------------------------------------------------
+# Literature comparison: Kim et al. 2010 (doi:10.1007/s10439-010-0083-6), Table 3.
+#
+# UNITS CAVEAT (the crux of any literature comparison here):
+#   Our fitted parameters are PER GRAM of myocardium (LAD flow is scaled to the
+#   per-gram microsphere flow, so R has units [Ba.s/ml]*g and C is [ml/Ba]/g).
+#   Kim's Table 3 values are PER CORONARY OUTLET TERRITORY (a whole sub-tree
+#   supplying many grams of tissue), in paper units (R: 1e3 dyn.s/cm^5,
+#   C: 1e-6 cm^5/dyn). To compare, the territory values are scaled to per-gram
+#   using a territory mass M (resistances add in parallel -> R_per_g = R_terr*M;
+#   compliances add in parallel -> C_per_g = C_terr/M). M is NOT reported by Kim
+#   and is the single largest source of uncertainty in the comparison, so it is
+#   made explicit here and a sensitivity range is plotted/printed.
+# ---------------------------------------------------------------------------
+KIM_TERRITORY_MASS = 10.0          # nominal coronary-territory mass [g]
+KIM_TERRITORY_MASS_RANGE = (5.0, 20.0)  # sensitivity band for the comparison
+
 # Configure matplotlib for LaTeX rendering
 plt.rcParams.update({
     'text.usetex': True,
@@ -113,15 +130,22 @@ def plot_results(animal, config, data, get_sim_qv_func, node_in, get_name_func, 
 def plot_parameters(animal, optimized, get_name_func, model_name):
     """Plot optimized parameters for a single animal with independent y-axes."""
     studies = list(optimized.keys())
-    n_param = len(optimized[studies[0]].keys())
+    # Union of parameters across studies (some studies may lack Pim params, e.g.
+    # when a study without strain falls back to the LVP-driven Pim).
+    param_keys = []
+    for s in studies:
+        for k in optimized[s].keys():
+            if k not in param_keys:
+                param_keys.append(k)
+    n_param = len(param_keys)
     _, axes = plt.subplots(1, n_param, figsize=(n_param * 3, 6))
     if n_param == 1:
         axes = [axes]
     else:
         axes = axes.flatten()
 
-    for i, (param, val) in enumerate(optimized[studies[0]].keys()):
-        values = np.array([optimized[s][(param, val)] for s in studies])
+    for i, (param, val) in enumerate(param_keys):
+        values = np.array([optimized[s].get((param, val), np.nan) for s in studies])
         zerod = val[0]
         values, unit, name = convert_units(zerod, values, units)
         ylabel = f"{name} [{unit}]"
@@ -170,7 +194,6 @@ def plot_parameters_multi(animals_optimized, studies, model_name, unit_system="w
     #             C_per_gram = C_total / territory_mass (capacitances in parallel)
     # Store in CGS, convert to display units later (same as our data)
     kim_ranges_cgs = {}
-    KIM_TERRITORY_MASS = 10.0  # Estimated mass of coronary territory in grams
     if kim_data:
         # Only use normal vessels (single letter keys a-k), not stenosis cases (c*, d*, etc.)
         normal_vessels = [k for k in kim_data.keys() if len(k) == 1]
@@ -425,11 +448,89 @@ def plot_parameters_multi(animals_optimized, studies, model_name, unit_system="w
     fig.legend(handles=legend_handles, loc='upper center', ncol=len(animals) + (1 if kim_ranges_cgs else 0),
                bbox_to_anchor=(0.5, 1.02), frameon=True, fontsize=10)
 
+    # Make the units assumption explicit: our values are per gram; Kim's are
+    # per territory, scaled to per gram using an assumed territory mass.
+    if kim_ranges_cgs:
+        fig.text(0.5, -0.01,
+                 r'Our values are per gram of myocardium; Kim et al.\ territory values scaled to per gram '
+                 rf'assuming a {KIM_TERRITORY_MASS:.0f}~g territory '
+                 rf'(R$_{{\mathrm{{per\,g}}}}$=R$_{{\mathrm{{terr}}}}\times$M, '
+                 rf'C$_{{\mathrm{{per\,g}}}}$=C$_{{\mathrm{{terr}}}}/$M).',
+                 ha='center', va='top', fontsize=8, style='italic')
+
     plt.tight_layout()
     fig.subplots_adjust(top=0.92)
     plt.savefig(f"plots/multi_animal_{model_name}_parameters.pdf", bbox_inches='tight')
     print(f"Parameters plot saved: plots/multi_animal_{model_name}_parameters.pdf")
     plt.close()
+
+
+def plot_pim_parameters(animals_optimized, studies, model_name):
+    """Plot the fitted intramyocardial-pressure (Pim) driver parameters.
+
+    For the hybrid model Pim = a*P_LV + beta*[dS/dt]+:
+        a    = _Pim_scale        (dimensionless fraction of LV pressure transmitted)
+        beta = _Pim_strain_rate  (peak pressure [mmHg] of the shortening-rate term)
+    Per-animal points plus mean+/-std bars per condition. Studies/animals that fell
+    back to the LVP driver (no strain) simply have no points. Skipped if neither
+    parameter was fitted (e.g. a pure LVP run).
+    """
+    animals = sorted(animals_optimized.keys())
+    # (key, label, ba_to_mmHg?) — a is dimensionless, beta is a pressure in Ba
+    panels = [
+        (("BC_COR", "_Pim_scale"), r"$a$  (LV-pressure fraction) [-]", False),
+        (("BC_COR", "_Pim_strain_rate"), r"$\beta$  (shortening-rate) [mmHg]", True),
+    ]
+
+    # Skip entirely if neither parameter is present anywhere
+    keys_present = {key for (key, _, _) in panels
+                    if any(key in animals_optimized[a].get(s, {})
+                           for a in animals for s in studies)}
+    if not keys_present:
+        print("plot_pim_parameters: no Pim driver parameters fitted, skipping")
+        return
+
+    colors = plt.cm.tab10(np.linspace(0, 1, len(animals)))
+    cmap = {a: colors[i] for i, a in enumerate(animals)}
+    x = np.arange(len(studies))
+    labels = [s.replace("_", "\n") for s in studies]
+
+    fig, axes = plt.subplots(1, len(panels), figsize=(len(panels) * 5.0, 4.5),
+                             squeeze=False)
+    for ax, (key, ylabel, to_mmHg) in zip(axes[0], panels):
+        means, stds = [], []
+        for si, s in enumerate(studies):
+            vals = []
+            for a in animals:
+                v = animals_optimized[a].get(s, {}).get(key)
+                if v is None:
+                    continue
+                if to_mmHg:
+                    v = v * Ba_to_mmHg
+                vals.append(v)
+                ax.scatter(si, v, s=50, color=cmap[a], alpha=0.8, zorder=2)
+            means.append(np.mean(vals) if vals else np.nan)
+            stds.append(np.std(vals) if vals else np.nan)
+        ax.bar(x, means, alpha=0.3, color="steelblue", zorder=1)
+        ax.errorbar(x, means, yerr=stds, fmt="none", ecolor="black",
+                    capsize=3, capthick=1.5, zorder=3)
+        ax.set_ylabel(ylabel)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, fontsize=9)
+        ax.grid(True, axis="y", alpha=0.3)
+        ax.set_ylim(bottom=0)
+
+    handles = [plt.Line2D([0], [0], marker='o', color='w',
+                          markerfacecolor=cmap[a], markersize=9,
+                          label=f'DSEA{a:02d}') for a in animals]
+    fig.legend(handles=handles, loc='upper center', ncol=len(animals),
+               bbox_to_anchor=(0.5, 1.04), frameon=True, fontsize=9)
+    fig.suptitle(r'\textbf{Fitted Pim driver: } $P_{im}=a\,P_{LV}+\beta\,[\dot S]^+$',
+                 y=1.10, fontsize=13)
+    plt.tight_layout()
+    plt.savefig(f"plots/multi_animal_{model_name}_pim_drivers.pdf", bbox_inches='tight')
+    plt.close()
+    print(f"Pim driver parameters plot saved: plots/multi_animal_{model_name}_pim_drivers.pdf")
 
 
 def plot_parameters_normalized(animals_optimized, studies, model_name):
@@ -890,8 +991,13 @@ def plot_volume_metrics(all_volume_metrics, studies, model_name):
     plt.close()
     print(f"Volume metrics plot saved: plots/multi_animal_{model_name}_volume_metrics.pdf")
 
-    # Print statistics tables
-    _print_volume_metrics_tables(all_volume_metrics, studies, metric_groups)
+    # Print statistics tables (with an extra sloshing / EDV-normalized group)
+    table_groups = metric_groups + [
+        ("Sloshing / EDV-normalized\n(absolute values)",
+         ["dV_total_frac_edv", "V_in_forward_frac_edv", "V_slosh_frac_edv",
+          "sloshing_fraction", "Cc_required", "Cc_fitted", "Pim_swing"], True, None),
+    ]
+    _print_volume_metrics_tables(all_volume_metrics, studies, table_groups)
 
 
 def plot_volume_balance(all_volume_metrics, studies, model_name):
@@ -1043,6 +1149,180 @@ def plot_volume_balance(all_volume_metrics, studies, model_name):
     plt.savefig(f"plots/multi_animal_{model_name}_volume_balance.pdf", bbox_inches='tight')
     plt.close()
     print(f"Volume balance plot saved: plots/multi_animal_{model_name}_volume_balance.pdf")
+
+
+def _collect_metric(all_volume_metrics, studies, metric, animals=None, scale=1.0):
+    """Collect mean/std of a metric across animals for each study.
+
+    Returns (means, stds) lists aligned with `studies`. Missing values -> nan.
+    """
+    if animals is None:
+        animals = sorted(all_volume_metrics.keys())
+    means, stds = [], []
+    for study in studies:
+        vals = []
+        for a in animals:
+            m = all_volume_metrics.get(a, {}).get(study, {})
+            if metric in m and m[metric] is not None and np.isfinite(m[metric]):
+                vals.append(m[metric] * scale)
+        means.append(np.mean(vals) if vals else np.nan)
+        stds.append(np.std(vals) if vals else np.nan)
+    return np.array(means), np.array(stds)
+
+
+def _format_condition(s):
+    """Human-readable, line-broken condition label."""
+    s = (s.replace('mild_sten_dob', 'Mild Stenosis\n+ Dobutamine')
+          .replace('mod_sten_dob', 'Moderate Stenosis\n+ Dobutamine')
+          .replace('mild_sten', 'Mild Stenosis')
+          .replace('mod_sten', 'Moderate Stenosis')
+          .replace('baseline', 'Baseline'))
+    return s
+
+
+# Paper (Stendahl et al.) Fig. 4 ischemic-region values, as fraction of EDV.
+# Arterial inflow per cycle (DV_Blood/EDV) and phasic tissue swing (|DV_Tissue|/EDV),
+# read from the figure for the five conditions (approximate, for reference overlay).
+PAPER_FIG4_ISCHEMIC = {
+    "arterial_inflow_frac": {  # DV_Blood / EDV
+        "baseline": 0.011, "mild_sten": 0.010, "mild_sten_dob": 0.022,
+        "mod_sten": 0.006, "mod_sten_dob": 0.010,
+    },
+    "tissue_swing_frac": {     # |DV_Tissue| / EDV
+        "baseline": 0.10, "mild_sten": 0.095, "mild_sten_dob": 0.15,
+        "mod_sten": 0.065, "mod_sten_dob": 0.10,
+    },
+}
+
+
+def plot_volume_vs_inflow(all_volume_metrics, studies, model_name):
+    """Replicate Stendahl et al. Fig. 4: per-cycle arterial inflow vs phasic tissue
+    volume change, both as a fraction of end-diastolic tissue volume (EDV).
+
+    Overlays the paper's reported ischemic-region values for direct comparison.
+    """
+    animals = sorted(all_volume_metrics.keys())
+    if not animals:
+        return
+    x = np.arange(len(studies))
+
+    inflow_m, inflow_s = _collect_metric(all_volume_metrics, studies, 'V_in_forward_frac_edv', scale=100)
+    swing_m, swing_s = _collect_metric(all_volume_metrics, studies, 'dV_total_frac_edv', scale=100)
+
+    paper_inflow = [PAPER_FIG4_ISCHEMIC["arterial_inflow_frac"].get(s, np.nan) * 100 for s in studies]
+    paper_swing = [PAPER_FIG4_ISCHEMIC["tissue_swing_frac"].get(s, np.nan) * 100 for s in studies]
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+    # Top: arterial inflow per cycle (% EDV)
+    ax = axes[0]
+    ax.bar(x - 0.18, inflow_m, 0.36, yerr=inflow_s, capsize=3, color='#E74C3C',
+           label=r'Model (per gram $\to$ \%EDV)')
+    ax.scatter(x + 0.18, paper_inflow, s=80, color='black', marker='D',
+               zorder=5, label=r'Stendahl et al.\ (ischemic)')
+    ax.set_ylabel(r'$\Delta V_{\mathrm{Blood}}/\mathrm{EDV}$ [\%]')
+    ax.set_title(r'\textbf{Per-cycle arterial inflow}')
+    ax.legend(loc='upper left', fontsize=10)
+    ax.grid(True, axis='y', alpha=0.3)
+
+    # Bottom: phasic tissue volume swing (% EDV)
+    ax = axes[1]
+    ax.bar(x - 0.18, swing_m, 0.36, yerr=swing_s, capsize=3, color='#3498DB',
+           label=r'Model (per gram $\to$ \%EDV)')
+    ax.scatter(x + 0.18, paper_swing, s=80, color='black', marker='D',
+               zorder=5, label=r'Stendahl et al.\ (ischemic)')
+    ax.set_ylabel(r'$|\Delta V_{\mathrm{Tissue}}|/\mathrm{EDV}$ [\%]')
+    ax.set_title(r'\textbf{Phasic tissue volume change}')
+    ax.set_xticks(x)
+    ax.set_xticklabels([_format_condition(s) for s in studies], fontsize=9)
+    ax.legend(loc='upper left', fontsize=10)
+    ax.grid(True, axis='y', alpha=0.3)
+
+    fig.suptitle(r'\textbf{Inflow vs.\ phasic volume change (cf.\ Stendahl et al.\ Fig.~4)}',
+                 fontsize=14)
+    plt.tight_layout()
+    plt.savefig(f"plots/multi_animal_{model_name}_volume_vs_inflow.pdf", bbox_inches='tight')
+    plt.close()
+    print(f"Volume-vs-inflow (Fig.4 replica) saved: plots/multi_animal_{model_name}_volume_vs_inflow.pdf")
+
+
+def plot_sloshing_capacity(all_volume_metrics, studies, model_name):
+    """Quantify the 'sloshing' (recirculated) blood volume and the capacity needed
+    to hold it.
+
+    Panels:
+      (a) Per-cycle volumes as % EDV: arterial inflow vs phasic swing vs sloshing.
+      (b) Sloshing fraction (% of the phasic swing that is recirculated, not LAD-new).
+      (c) Required compliance to hold the sloshing volume vs the fitted Cc [ml/mmHg/g].
+      (d) Absolute sloshing volume [ml/g] with the intramyocardial pressure swing.
+    """
+    animals = sorted(all_volume_metrics.keys())
+    if not animals:
+        return
+    x = np.arange(len(studies))
+    labels = [_format_condition(s) for s in studies]
+
+    inflow_m, inflow_s = _collect_metric(all_volume_metrics, studies, 'V_in_forward_frac_edv', scale=100)
+    swing_m, swing_s = _collect_metric(all_volume_metrics, studies, 'dV_total_frac_edv', scale=100)
+    slosh_m, slosh_s = _collect_metric(all_volume_metrics, studies, 'V_slosh_frac_edv', scale=100)
+    frac_m, frac_s = _collect_metric(all_volume_metrics, studies, 'sloshing_fraction', scale=100)
+    creq_m, creq_s = _collect_metric(all_volume_metrics, studies, 'Cc_required')
+    cfit_m, cfit_s = _collect_metric(all_volume_metrics, studies, 'Cc_fitted')
+    sloshabs_m, sloshabs_s = _collect_metric(all_volume_metrics, studies, 'V_slosh')
+    pim_m, pim_s = _collect_metric(all_volume_metrics, studies, 'Pim_swing')
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 10))
+
+    # (a) inflow vs swing vs slosh, % EDV
+    ax = axes[0, 0]
+    w = 0.27
+    ax.bar(x - w, inflow_m, w, yerr=inflow_s, capsize=3, color='#E74C3C', label='Arterial inflow')
+    ax.bar(x, swing_m, w, yerr=swing_s, capsize=3, color='#34495E', label='Phasic tissue swing')
+    ax.bar(x + w, slosh_m, w, yerr=slosh_s, capsize=3, color='#3498DB', label='Sloshing (recirculated)')
+    ax.set_ylabel(r'Volume [\% EDV]')
+    ax.set_title(r'\textbf{(a) Per-cycle volumes}')
+    ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=8)
+    ax.legend(fontsize=9); ax.grid(True, axis='y', alpha=0.3)
+
+    # (b) sloshing fraction
+    ax = axes[0, 1]
+    ax.bar(x, frac_m, 0.6, yerr=frac_s, capsize=3, color='#3498DB')
+    ax.axhline(100, color='gray', ls=':', lw=1)
+    ax.set_ylabel(r'Sloshing fraction [\%]')
+    ax.set_title(r'\textbf{(b) Fraction of swing that recirculates}')
+    ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=8)
+    ax.set_ylim(0, 105); ax.grid(True, axis='y', alpha=0.3)
+
+    # (c) required vs fitted compliance
+    ax = axes[1, 0]
+    w = 0.36
+    ax.bar(x - w/2, creq_m * 1e3, w, yerr=creq_s * 1e3, capsize=3, color='#9B59B6',
+           label=r'Required ($V_{\mathrm{slosh}}/\Delta P_{im}$)')
+    ax.bar(x + w/2, cfit_m * 1e3, w, yerr=cfit_s * 1e3, capsize=3, color='#1ABC9C',
+           label=r'Fitted $C_c$')
+    ax.set_ylabel(r'Compliance [$10^{-3}$ ml/mmHg/g]')
+    ax.set_title(r'\textbf{(c) Capacity required vs.\ fitted}')
+    ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=8)
+    ax.legend(fontsize=9); ax.grid(True, axis='y', alpha=0.3)
+
+    # (d) absolute sloshing volume + Pim swing
+    ax = axes[1, 1]
+    ax.bar(x, sloshabs_m * 1e3, 0.6, yerr=sloshabs_s * 1e3, capsize=3, color='#3498DB')
+    ax.set_ylabel(r'Sloshing volume [$10^{-3}$ ml/g]')
+    ax.set_title(r'\textbf{(d) Absolute sloshing volume}')
+    ax.set_xticks(x); ax.set_xticklabels(labels, fontsize=8)
+    ax.grid(True, axis='y', alpha=0.3)
+    ax2 = ax.twinx()
+    ax2.plot(x, pim_m, 'o-', color='#E67E22', label=r'$\Delta P_{im}$')
+    ax2.set_ylabel(r'$\Delta P_{im}$ [mmHg]', color='#E67E22')
+    ax2.tick_params(axis='y', labelcolor='#E67E22')
+
+    fig.suptitle(r'\textbf{Recirculated (sloshing) blood volume and the capacity to hold it}',
+                 fontsize=15)
+    plt.tight_layout()
+    plt.savefig(f"plots/multi_animal_{model_name}_sloshing_capacity.pdf", bbox_inches='tight')
+    plt.close()
+    print(f"Sloshing-capacity plot saved: plots/multi_animal_{model_name}_sloshing_capacity.pdf")
 
 
 def _print_volume_metrics_tables(all_volume_metrics, studies, metric_groups):
